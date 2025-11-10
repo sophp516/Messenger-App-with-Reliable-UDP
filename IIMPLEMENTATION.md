@@ -38,10 +38,9 @@ Listening for connections...
 [TIMESTAMP] Message relayed: alice -> bob
 ```
 
+## Major Data Structures
 
-## Major Data Structures 
-
-### Packet Structure 
+### Packet Structure
 
 ```
 Packet:
@@ -54,11 +53,12 @@ Packet:
     - checksum: integer (16-bit)
 ```
 
-### Client Registry - Who is in the system?
+### Client Registry - Who is in the system? (Server Side)
+
 ```
 ClientRegistry:
     Map<username, ClientInfo>
-    
+
 ClientInfo:
     - username: string
     - address: (IP, port) tuple
@@ -67,19 +67,39 @@ ClientInfo:
     - status: enum (ONLINE, OFFLINE)
 ```
 
-### Group chat structure (Stretch Feature)
+### Group chat structure (Stretch Feature) (Server side)
 
 ```
+GroupRegistry:
+    Map<group_name, Group>
+
 Group:
     - group_name: string
-    - admin: string
-    - members: Set<string>
+    - admin: string                      # username of creator
+    - members: Set<string>              # usernames
     - created_at: timestamp
-    - message_history: List<Message> (optional, limited size)
+    - message_history: List<GroupMessage> (optional, fixed-size ring buffer)
+
+GroupMessage (optional):
+    - sender: string
+    - timestamp: float
+    - payload: string
+    - sequence_number: uint32 (server-assigned)
 ```
 
 ### Pending Message Queue
+
 ```
+Tracks delivery state of each sent message.
+
+MessageStatus:
+    Map<sequence_number, MessageInfo>
+
+MessageInfo:
+    - status: enum (SENT, DELIVERED, FAILED)
+    - timestamp: float (when sent)
+    - retries: int
+
 PendingMessage:
     - sequence_number: integer
     - packet: Packet
@@ -88,11 +108,76 @@ PendingMessage:
     - recipient: string
     - callback: function (on success/failure)
 ```
-## Key Modules 
+
+### Duplicate Detection (Client-side)
+
+received_seq_window: - Type: deque (maxlen=100) - Purpose: Tracks recently received sequence numbers - Used by: recv_thread - Behavior: - If seq in window → resend ACK, ignore duplicate - Else → process message, append seq
+
+## Key Modules for basic specs
 
 ### Client.py
 
+```
+send SYN → wait SYN_ACK → send ACK
+start input_thread, recv_thread, retransmit_thread
+
+input_thread:
+  read user input
+  if has message: send DATA(seq=n)
+  if "/quit": send FIN, exit
+
+recv_thread:
+  if DATA: print msg, send ACK
+  if ACK: mark delivered
+  if FIN_ACK: disconnect, mark failed
+  if seq in received_seq_window: send ACK (duplicate), ignore payload
+    else: process message, add seq to window
+
+retransmit_thread:
+  retry unacked msgs
+```
 
 ### Server.py
 
-### Protocol.py 
+```
+
+bind UDP socket on port 5000
+init ClientRegistry, PendingQueue
+loop:
+  packet = recv()
+
+  if SYN:
+    register client, send SYN_ACK
+
+  elif ACK (from handshake):
+    mark client connected
+
+  elif DATA:
+    validate seq
+    forward to dest client
+    send ACK to sender
+
+  elif ACK:
+    mark message delivered
+
+  elif FIN:
+    send FIN_ACK, remove client
+
+periodically:
+  clean inactive clients (timeout > 90s)
+```
+
+### Protocol.py
+
+- Handles packet creation, parsing, and checksum verification
+
+```
+class MsgType(Enum):
+    DATA = 0x01
+    ACK = 0x03
+    SYN = 0x04
+    SYN_ACK = 0x05
+    FIN = 0x06
+    HEARTBEAT = 0x07
+    ERROR = 0x08
+```
