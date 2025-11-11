@@ -132,6 +132,7 @@ recv_thread:
   if FIN_ACK: disconnect, mark failed
   if seq in received_seq_window: send ACK (duplicate), ignore payload
     else: process message, add seq to window
+  if connection lost: attempt reconnect up to 3 times before exit.
 
 retransmit_thread:
   retry unacked msgs
@@ -145,6 +146,8 @@ bind UDP socket on port 5000
 init ClientRegistry, PendingQueue
 loop:
   packet = recv()
+
+  if invalid checksum or missing fields: drop packet and log error.
 
   if SYN:
     register client, send SYN_ACK
@@ -165,6 +168,14 @@ loop:
 
 periodically:
   clean inactive clients (timeout > 90s)
+  handle heartbeat packets to maintain active connections
+
+heartbeat handling:
+  - Each connected client is expected to send a HEARTBEAT packet every 30 seconds.
+  - Upon receiving a HEARTBEAT, the server updates the client’s `last_seen` timestamp.
+  - If a client fails to send a HEARTBEAT within 90 seconds, it is considered disconnected and removed from the registry.
+  - HEARTBEAT messages use the packet_type = HEARTBEAT (0x07) as defined in Protocol.py.
+  - The client’s retransmission or input thread may periodically send this packet on a background timer.
 ```
 
 ### Protocol.py
@@ -181,3 +192,22 @@ class MsgType(Enum):
     HEARTBEAT = 0x07
     ERROR = 0x08
 ```
+
+## Error Handlings
+
+- In cases of packet loss, we can try retransmit the message
+- Handle connection timeout by marking client as disconnected and try reconnect 3x
+- Drop packet that doesn't meet standards
+
+## Resource Management (building off requirement)
+
+- Handle client disconnections gracefully -> Server removes inactive clients after 90s.
+- Both client and server need to free connection state, message queues, and pending messages when a session end to clean up resources
+- Implement connection limits to prevent resource exhaustion by defining a max client threshold
+
+## Testing Plan
+
+- Functional: message send/receive, retransmission, connection teardown.
+- Reliability: simulate 10%, 25%, 50% packet loss.
+- Stress: running 50+ clients concurrently using thread simulation
+- Edge: duplicate packets, out-of-order delivery.
