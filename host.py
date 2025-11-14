@@ -1,296 +1,488 @@
 import socket
 import struct
 import time
+import threading
 from collections import defaultdict
+from enum import IntEnum
+from dataclasses import dataclass
+from typing import Dict, Set, Optional, Tuple
 
-PORT = 8080
+# Protocol Constants
+PORT = 5000
+HEARTBEAT_INTERVAL = 30  # seconds
+CLIENT_TIMEOUT = 90  # seconds
+MAX_CLIENTS = 100
 
-# Message type constants
-MSG_TYPE_1TO1 = 0x01
-MSG_TYPE_GROUP = 0x02
-MSG_TYPE_ACK = 0x03
-MSG_TYPE_SYN = 0x04
-MSG_TYPE_CONN_ACCEPT = 0x05
-MSG_TYPE_FIN = 0x06
-MSG_TYPE_HEARTBEAT = 0x07
-MSG_TYPE_ERROR = 0x08
+class MsgType(IntEnum):
+    DATA = 0x01
+    ACK = 0x03
+    SYN = 0x04
+    SYN_ACK = 0x05
+    FIN = 0x06
+    HEARTBEAT = 0x07
+    ERROR = 0x08
+    JOIN = 0x09
+    LEAVE = 0x0A
+    GROUP_MSG = 0x0B
 
-# client id -> (ip, port)
-clients = {}
-# 1:1 connection id -> (client id, client id)
-connections = defaultdict(tuple)
-# group id -> set of client ids
-group_connections = defaultdict(set)
-# client id -> expected sequence number (for duplicate detection)
-client_seq_nums = defaultdict(int)
-# client id -> last heartbeat time
-client_heartbeats = {}
+@dataclass
+class ClientInfo:
+    username: str
+    address: Tuple[str, int]
+    last_seen: float
+    sequence_number: int
+    status: str  # "ONLINE" or "OFFLINE"
+    pending_ack: Optional[int] = None  # sequence number waiting for ACK
 
-# global socket reference (set in main function for easier access)
-sock = None
+class Group:
+    def __init__(self, group_name: str, admin: str):
+        self.group_name = group_name
+        self.admin = admin
+        self.members: Set[str] = set([admin])
+        self.created_at = time.time()
+        self.message_history = []  # Optional: fixed-size ring buffer
 
-def parse_packet(data):
-    """
-    Parse incoming packet according to protocol format.
-    Returns: (msg_type, seq_num, source_id, dest_id, payload_len, flags, timestamp, checksum, payload)
-    """
+    def add_member(self, member: str):
+        self.members.add(member)
+
+    def remove_member(self, member: str):
+        self.members.discard(member)
+
+    def get_members(self) -> Set[str]:
+        return self.members.copy()
+
+    def has_member(self, username: str) -> bool:
+        return username in self.members
+
+def calculate_checksum(data: bytes) -> int:
+    """Calculate 16-bit checksum for packet"""
+    checksum = 0
+    for i in range(0, len(data), 2):
+        if i + 1 < len(data):
+            word = (data[i] << 8) | data[i + 1]
+        else:
+            word = data[i] << 8
+        checksum = (checksum + word) & 0xFFFF
+    return (~checksum) & 0xFFFF
+
+def create_packet(packet_type: int, sequence_number: int, sender: str, 
+                  recipient: str, payload: bytes = b"") -> bytes:
+    """Create a packet with the specified fields"""
+    timestamp = time.time()
+    
+    # Encode strings
+    sender_bytes = sender.encode('utf-8')
+    recipient_bytes = recipient.encode('utf-8')
+    
+    # Packet structure:
+    # packet_type (1 byte)
+    # sequence_number (4 bytes, unsigned int)
+    # timestamp (8 bytes, double)
+    # sender_len (2 bytes, unsigned short)
+    # sender (variable)
+    # recipient_len (2 bytes, unsigned short)
+    # recipient (variable)
+    # payload_len (4 bytes, unsigned int)
+    # payload (variable)
+    # checksum (2 bytes, unsigned short)
+    
+    header = struct.pack('!B I d H', packet_type, sequence_number, timestamp, len(sender_bytes))
+    header += sender_bytes
+    header += struct.pack('!H', len(recipient_bytes))
+    header += recipient_bytes
+    header += struct.pack('!I', len(payload))
+    header += payload
+    
+    # Calculate checksum on everything except checksum field
+    checksum = calculate_checksum(header)
+    header += struct.pack('!H', checksum)
+    
+    return header
+
+def parse_packet(data: bytes) -> Optional[Dict]:
+    """Parse a packet and return dictionary with fields, or None if invalid"""
     try:
-        if len(data) < 18:  # Minimum header size
+        if len(data) < 19:  # Minimum size for header
             return None
         
-        # parse fixed header fields
-        msg_type = data[0]
-        seq_num = struct.unpack('>I', data[1:5])[0]  # 4 bytes, big-endian
+        # Parse fixed header
+        packet_type, seq_num, timestamp, sender_len = struct.unpack('!B I d H', data[:15])
         
-        # parse variable-length IDs (assuming they're null-terminated strings)
-        idx = 5
-        # Source ID
-        source_end = data.find(b'\x00', idx)
-        if source_end == -1:
-            return None
-        source_id = data[idx:source_end].decode('utf-8')
-        idx = source_end + 1
-        
-        # destination ID
-        dest_end = data.find(b'\x00', idx)
-        if dest_end == -1:
-            return None
-        dest_id = data[idx:dest_end].decode('utf-8')
-        idx = dest_end + 1
-        
-        if len(data) < idx + 11:  # payload length + flags + timestamp + checksum
+        offset = 15
+        if offset + sender_len > len(data):
             return None
         
-        payload_len = struct.unpack('>H', data[idx:idx+2])[0]  # 2 bytes
-        flags = data[idx+2]
-        timestamp = struct.unpack('>Q', data[idx+3:idx+11])[0]  # 8 bytes
-        checksum = struct.unpack('>H', data[idx+11:idx+13])[0]  # 2 bytes
+        sender = data[offset:offset + sender_len].decode('utf-8')
+        offset += sender_len
         
-        # payload
-        payload_start = idx + 13
-        if len(data) < payload_start + payload_len:
+        if offset + 2 > len(data):
             return None
-        payload = data[payload_start:payload_start + payload_len]
         
-        return (msg_type, seq_num, source_id, dest_id, payload_len, flags, timestamp, checksum, payload)
-    except Exception as e:
-        print(f"Error parsing packet: {e}")
+        recipient_len, = struct.unpack('!H', data[offset:offset + 2])
+        offset += 2
+        
+        if offset + recipient_len > len(data):
+            return None
+        
+        recipient = data[offset:offset + recipient_len].decode('utf-8')
+        offset += recipient_len
+        
+        if offset + 4 > len(data):
+            return None
+        
+        payload_len, = struct.unpack('!I', data[offset:offset + 4])
+        offset += 4
+        
+        if offset + payload_len + 2 > len(data):
+            return None
+        
+        payload = data[offset:offset + payload_len]
+        offset += payload_len
+        
+        if offset + 2 > len(data):
+            return None
+        
+        received_checksum, = struct.unpack('!H', data[offset:offset + 2])
+        
+        # Verify checksum
+        packet_without_checksum = data[:offset]
+        calculated_checksum = calculate_checksum(packet_without_checksum)
+        
+        if received_checksum != calculated_checksum:
+            return None
+        
+        return {
+            'packet_type': packet_type,
+            'sequence_number': seq_num,
+            'timestamp': timestamp,
+            'sender': sender,
+            'recipient': recipient,
+            'payload': payload,
+            'checksum': received_checksum
+        }
+    except (struct.error, UnicodeDecodeError, IndexError):
         return None
 
-def create_ack_packet(seq_num, source_id, dest_id):
-    """create an ACK packet."""
-    # simple ACK format: type + seq num + source id + dest id
-    source_bytes = source_id.encode('utf-8') + b'\x00'
-    dest_bytes = dest_id.encode('utf-8') + b'\x00'
-    timestamp = int(time.time() * 1000)  # timestamp in milliseconds
-    
-    packet = struct.pack('>B', MSG_TYPE_ACK)  # message type
-    packet += struct.pack('>I', seq_num)  # sequence number
-    packet += source_bytes  # source id
-    packet += dest_bytes  # destination id
-    packet += struct.pack('>H', 0)  # payload length (0 for ACK)
-    packet += struct.pack('>B', 0)  # flags
-    packet += struct.pack('>Q', timestamp)  # timestamp
-    packet += struct.pack('>H', 0)  # checksum (simplified)
-    
-    return packet
-
-def send_packet(packet, addr):
-    """Send packet to address."""
-    global sock
-    if sock:
-        sock.sendto(packet, addr)
-
-def handle_client(data, addr):
-    """
-    Handle incoming client packet.
-    Parses packet, handles different message types, and routes messages.
-    """
-    global clients, group_connections, client_seq_nums, client_heartbeats
-    
-    parsed = parse_packet(data)
-    if not parsed:
-        print(f"Invalid packet from {addr}")
-        return
-    
-    msg_type, seq_num, source_id, dest_id, payload_len, flags, timestamp, checksum, payload = parsed
-    
-    client_heartbeats[source_id] = time.time()
-    
-    # handle duplicate detection
-    if source_id in client_seq_nums:
-        if seq_num <= client_seq_nums[source_id]:
-            # duplicate or out-of-order - send ACK anyway but don't process
-            print(f"Duplicate/out-of-order packet from {source_id}: seq={seq_num}, expected>{client_seq_nums[source_id]}")
-            ack = create_ack_packet(seq_num, "host", source_id)
-            send_packet(ack, addr)
-            return
-    
-    # update expected sequence number
-    client_seq_nums[source_id] = seq_num
-    
-    # route based on message type
-    if msg_type == MSG_TYPE_SYN:
-        handle_connection_request(source_id, addr, seq_num)
+class UDPServer:
+    def __init__(self, port: int = PORT):
+        self.port = port
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(('0.0.0.0', port))
+        self.client_registry: Dict[str, ClientInfo] = {}
+        self.group_registry: Dict[str, Group] = {}
+        self.pending_messages: Dict[int, Dict] = {}  # seq_num -> message info
+        self.sequence_counter = 0
+        self.lock = threading.Lock()
+        self.running = True
         
-    elif msg_type == MSG_TYPE_ACK:
-        # logging acknowledgement
-        print(f"ACK received from {source_id} for seq {seq_num}")
+    def get_next_sequence(self) -> int:
+        """Get next sequence number for server-originated packets"""
+        with self.lock:
+            self.sequence_counter += 1
+            return self.sequence_counter
+    
+    def log(self, message: str):
+        """Log a message with timestamp"""
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+        print(f"[{timestamp}] {message}")
+    
+    def send_packet(self, packet: bytes, address: Tuple[str, int]):
+        """Send a packet to the specified address"""
+        try:
+            self.sock.sendto(packet, address)
+        except Exception as e:
+            self.log(f"Error sending packet to {address}: {e}")
+    
+    def handle_syn(self, packet: Dict, address: Tuple[str, int]):
+        """Handle SYN packet - register new client"""
+        username = packet['sender']
         
-    elif msg_type == MSG_TYPE_1TO1:
-        # 1:1 message - relay to destination
-        handle_1to1_message(source_id, dest_id, payload, seq_num, addr)
+        with self.lock:
+            # Check if username already exists
+            if username in self.client_registry:
+                # Client reconnecting - update address
+                self.client_registry[username].address = address
+                self.client_registry[username].last_seen = time.time()
+                self.client_registry[username].status = "ONLINE"
+                self.log(f"Client '{username}' reconnected from {address[0]}:{address[1]}")
+            else:
+                # New client
+                if len(self.client_registry) >= MAX_CLIENTS:
+                    # Send error packet
+                    error_payload = "Server is full. Maximum clients reached.".encode('utf-8')
+                    error_packet = create_packet(MsgType.ERROR, 0, "SERVER", username, error_payload)
+                    self.send_packet(error_packet, address)
+                    return
+                
+                self.client_registry[username] = ClientInfo(
+                    username=username,
+                    address=address,
+                    last_seen=time.time(),
+                    sequence_number=0,
+                    status="ONLINE"
+                )
+                self.log(f"Client '{username}' connected from {address[0]}:{address[1]}")
         
-    elif msg_type == MSG_TYPE_GROUP:
-        # broadcasting group message to all group members
-        handle_group_message(source_id, dest_id, payload, seq_num, addr)
+        # Send SYN_ACK
+        syn_ack_packet = create_packet(MsgType.SYN_ACK, 0, "SERVER", username)
+        self.send_packet(syn_ack_packet, address)
+    
+    def handle_ack_handshake(self, packet: Dict, address: Tuple[str, int]):
+        """Handle ACK packet from handshake - mark client as connected"""
+        username = packet['sender']
         
-    elif msg_type == MSG_TYPE_FIN:
-        # handling connection close
-        handle_connection_close(source_id, addr)
+        with self.lock:
+            if username in self.client_registry:
+                self.client_registry[username].last_seen = time.time()
+                self.client_registry[username].status = "ONLINE"
+    
+    def handle_data(self, packet: Dict, address: Tuple[str, int]):
+        """Handle DATA packet - forward to recipient"""
+        sender = packet['sender']
+        recipient = packet['recipient']
+        seq_num = packet['sequence_number']
+        payload = packet['payload']
         
-    elif msg_type == MSG_TYPE_HEARTBEAT:
-        # sending ACK for heartbeat
-        ack = create_ack_packet(seq_num, "host", source_id)
-        send_packet(ack, addr)
-        
-    else:
-        print(f"Unknown message type {msg_type} from {source_id}")
-
-def handle_connection_request(source_id, addr, seq_num):
-    """Handle client connection request (SYN)."""
-    global clients
-    
-    # registering or updating client
-    clients[source_id] = addr
-    print(f"Client {source_id} connected from {addr}")
-    
-    # send connection accept (SYN-ACK)
-    # for simplicity, we'll use a simple accept message
-    source_bytes = "host".encode('utf-8') + b'\x00'
-    dest_bytes = source_id.encode('utf-8') + b'\x00'
-    timestamp = int(time.time() * 1000)
-    
-    packet = struct.pack('>B', MSG_TYPE_CONN_ACCEPT)
-    packet += struct.pack('>I', seq_num + 1)  # next sequence number
-    packet += source_bytes
-    packet += dest_bytes
-    packet += struct.pack('>H', 0)  # payload length
-    packet += struct.pack('>B', 0)  # flags
-    packet += struct.pack('>Q', timestamp)
-    packet += struct.pack('>H', 0)  # checksum
-    
-    send_packet(packet, addr)
-    
-    # sending ACK for the SYN
-    ack = create_ack_packet(seq_num, "host", source_id)
-    send_packet(ack, addr)
-
-def handle_1to1_message(source_id, dest_id, payload, seq_num, source_addr):
-    """Handle 1:1 message - relay to destination client."""
-    global clients
-    
-    # sending ACK to sender
-    ack = create_ack_packet(seq_num, "host", source_id)
-    send_packet(ack, source_addr)
-    
-    # checking if destination is connected
-    if dest_id not in clients:
-        print(f"Destination {dest_id} not found. Message from {source_id} dropped.")
-        # could queue message here for later delivery
-        return
-    
-    # relaying message to destination
-    dest_addr = clients[dest_id]
-    
-    source_bytes = source_id.encode('utf-8') + b'\x00'
-    dest_bytes = dest_id.encode('utf-8') + b'\x00'
-    timestamp = int(time.time() * 1000)
-    
-    packet = struct.pack('>B', MSG_TYPE_1TO1)
-    packet += struct.pack('>I', seq_num)
-    packet += source_bytes
-    packet += dest_bytes
-    packet += struct.pack('>H', len(payload))
-    packet += struct.pack('>B', 0)
-    packet += struct.pack('>Q', timestamp)
-    packet += struct.pack('>H', 0)  # Checksum
-    packet += payload
-    
-    send_packet(packet, dest_addr)
-    print(f"Relayed 1:1 message from {source_id} to {dest_id}: {payload.decode('utf-8', errors='ignore')}")
-
-def handle_group_message(source_id, group_id, payload, seq_num, source_addr):
-    """Handle group message - broadcast to all group members."""
-    global group_connections, clients
-    
-    # sending ACK to sender
-    ack = create_ack_packet(seq_num, "host", source_id)
-    send_packet(ack, source_addr)
-    
-    # ensuring sender is in the group
-    if source_id not in group_connections[group_id]:
-        group_connections[group_id].add(source_id)
-        print(f"Added {source_id} to group {group_id}")
-    
-    # broadcasting to all group members except sender
-    message_text = payload.decode('utf-8', errors='ignore')
-    print(f"Group message from {source_id} to group {group_id}: {message_text}")
-    
-    for member_id in group_connections[group_id]:
-        if member_id != source_id and member_id in clients:
-            dest_addr = clients[member_id]
+        with self.lock:
+            # Verify sender is registered
+            if sender not in self.client_registry:
+                return
             
-            # creating packet for each recipient
-            source_bytes = source_id.encode('utf-8') + b'\x00'
-            dest_bytes = group_id.encode('utf-8') + b'\x00'
-            timestamp = int(time.time() * 1000)
+            # Update sender's last_seen
+            self.client_registry[sender].last_seen = time.time()
             
-            packet = struct.pack('>B', MSG_TYPE_GROUP)
-            packet += struct.pack('>I', seq_num)
-            packet += source_bytes
-            packet += dest_bytes
-            packet += struct.pack('>H', len(payload))
-            packet += struct.pack('>B', 0)
-            packet += struct.pack('>Q', timestamp)
-            packet += struct.pack('>H', 0)
-            packet += payload
+            # Send ACK to sender
+            ack_packet = create_packet(MsgType.ACK, seq_num, "SERVER", sender)
+            self.send_packet(ack_packet, address)
             
-            send_packet(packet, dest_addr)
-
-def handle_connection_close(source_id, addr):
-    """Handle client disconnection (FIN)."""
-    global clients, group_connections, client_seq_nums, client_heartbeats
+            # Forward to recipient
+            if recipient in self.client_registry:
+                recipient_info = self.client_registry[recipient]
+                data_packet = create_packet(MsgType.DATA, seq_num, sender, recipient, payload)
+                self.send_packet(data_packet, recipient_info.address)
+                self.log(f"Message relayed: {sender} -> {recipient}")
+            else:
+                # Recipient not found - send error to sender
+                error_payload = f"User '{recipient}' is not online.".encode('utf-8')
+                error_packet = create_packet(MsgType.ERROR, seq_num, "SERVER", sender, error_payload)
+                self.send_packet(error_packet, address)
     
-    # removing from all groups
-    for group_id in list(group_connections.keys()):
-        group_connections[group_id].discard(source_id)
-        if not group_connections[group_id]:  # removing empty groups
-            del group_connections[group_id]
+    def handle_group_msg(self, packet: Dict, address: Tuple[str, int]):
+        """Handle GROUP_MSG packet - broadcast to group members"""
+        sender = packet['sender']
+        group_name = packet['recipient']  # recipient field contains group name
+        seq_num = packet['sequence_number']
+        payload = packet['payload']
+        
+        with self.lock:
+            if sender not in self.client_registry:
+                return
+            
+            self.client_registry[sender].last_seen = time.time()
+            
+            # Send ACK to sender
+            ack_packet = create_packet(MsgType.ACK, seq_num, "SERVER", sender)
+            self.send_packet(ack_packet, address)
+            
+            # Check if group exists
+            if group_name not in self.group_registry:
+                error_payload = f"Group '{group_name}' does not exist.".encode('utf-8')
+                error_packet = create_packet(MsgType.ERROR, seq_num, "SERVER", sender, error_payload)
+                self.send_packet(error_packet, address)
+                return
+            
+            group = self.group_registry[group_name]
+            
+            # Check if sender is a member
+            if not group.has_member(sender):
+                error_payload = f"You are not a member of group '{group_name}'.".encode('utf-8')
+                error_packet = create_packet(MsgType.ERROR, seq_num, "SERVER", sender, error_payload)
+                self.send_packet(error_packet, address)
+                return
+            
+            # Broadcast to all members except sender
+            for member in group.get_members():
+                if member != sender and member in self.client_registry:
+                    member_info = self.client_registry[member]
+                    data_packet = create_packet(MsgType.DATA, seq_num, sender, member, payload)
+                    self.send_packet(data_packet, member_info.address)
+            
+            self.log(f"Group message relayed: {sender} -> group '{group_name}'")
     
-    # cleaning up client data
-    if source_id in clients:
-        del clients[source_id]
-    if source_id in client_seq_nums:
-        del client_seq_nums[source_id]
-    if source_id in client_heartbeats:
-        del client_heartbeats[source_id]
+    def handle_join(self, packet: Dict, address: Tuple[str, int]):
+        """Handle JOIN packet - add client to group"""
+        sender = packet['sender']
+        group_name = packet['recipient']  # recipient field contains group name
+        
+        with self.lock:
+            if sender not in self.client_registry:
+                return
+            
+            self.client_registry[sender].last_seen = time.time()
+            
+            # Create group if it doesn't exist
+            if group_name not in self.group_registry:
+                self.group_registry[group_name] = Group(group_name, sender)
+                self.log(f"Group '{group_name}' created by '{sender}'")
+            else:
+                # Add member to existing group
+                self.group_registry[group_name].add_member(sender)
+                self.log(f"Client '{sender}' joined group '{group_name}'")
+            
+            # Send ACK
+            ack_packet = create_packet(MsgType.ACK, packet['sequence_number'], "SERVER", sender)
+            self.send_packet(ack_packet, address)
     
-    print(f"Client {source_id} disconnected")
+    def handle_leave(self, packet: Dict, address: Tuple[str, int]):
+        """Handle LEAVE packet - remove client from group"""
+        sender = packet['sender']
+        group_name = packet['recipient']  # recipient field contains group name
+        
+        with self.lock:
+            if sender not in self.client_registry:
+                return
+            
+            self.client_registry[sender].last_seen = time.time()
+            
+            if group_name in self.group_registry:
+                group = self.group_registry[group_name]
+                if group.has_member(sender):
+                    group.remove_member(sender)
+                    self.log(f"Client '{sender}' left group '{group_name}'")
+                    
+                    # Remove group if empty
+                    if len(group.get_members()) == 0:
+                        del self.group_registry[group_name]
+            
+            # Send ACK
+            ack_packet = create_packet(MsgType.ACK, packet['sequence_number'], "SERVER", sender)
+            self.send_packet(ack_packet, address)
     
-    # sending FIN-ACK
-    ack = create_ack_packet(0, "host", source_id)
-    send_packet(ack, addr)
+    def handle_heartbeat(self, packet: Dict, address: Tuple[str, int]):
+        """Handle HEARTBEAT packet - update last_seen"""
+        username = packet['sender']
+        
+        with self.lock:
+            if username in self.client_registry:
+                self.client_registry[username].last_seen = time.time()
+                self.client_registry[username].status = "ONLINE"
+    
+    def handle_fin(self, packet: Dict, address: Tuple[str, int]):
+        """Handle FIN packet - disconnect client"""
+        username = packet['sender']
+        
+        with self.lock:
+            if username in self.client_registry:
+                # Remove from all groups
+                groups_to_remove = []
+                for group_name, group in self.group_registry.items():
+                    if group.has_member(username):
+                        group.remove_member(username)
+                        if len(group.get_members()) == 0:
+                            groups_to_remove.append(group_name)
+                
+                for group_name in groups_to_remove:
+                    del self.group_registry[group_name]
+                
+                # Remove client
+                del self.client_registry[username]
+                self.log(f"Client '{username}' disconnected")
+        
+        # Send FIN_ACK
+        fin_ack_packet = create_packet(MsgType.FIN, 0, "SERVER", username)
+        self.send_packet(fin_ack_packet, address)
+    
+    def handle_ack(self, packet: Dict, address: Tuple[str, int]):
+        """Handle ACK packet - mark message as delivered"""
+        # ACKs are handled by clients, but we can update last_seen
+        username = packet['sender']
+        
+        with self.lock:
+            if username in self.client_registry:
+                self.client_registry[username].last_seen = time.time()
+    
+    def cleanup_inactive_clients(self):
+        """Periodically clean up inactive clients"""
+        while self.running:
+            time.sleep(10)  # Check every 10 seconds
+            
+            current_time = time.time()
+            clients_to_remove = []
+            
+            with self.lock:
+                for username, client_info in self.client_registry.items():
+                    if current_time - client_info.last_seen > CLIENT_TIMEOUT:
+                        clients_to_remove.append(username)
+                
+                for username in clients_to_remove:
+                    # Remove from groups
+                    groups_to_remove = []
+                    for group_name, group in self.group_registry.items():
+                        if group.has_member(username):
+                            group.remove_member(username)
+                            if len(group.get_members()) == 0:
+                                groups_to_remove.append(group_name)
+                    
+                    for group_name in groups_to_remove:
+                        del self.group_registry[group_name]
+                    
+                    # Remove client
+                    del self.client_registry[username]
+                    self.log(f"Client '{username}' timed out and removed")
+    
+    def run(self):
+        """Main server loop"""
+        self.log(f"Server started on port {self.port}")
+        self.log("Listening for connections...")
+        
+        # Start cleanup thread
+        cleanup_thread = threading.Thread(target=self.cleanup_inactive_clients, daemon=True)
+        cleanup_thread.start()
+        
+        while self.running:
+            try:
+                data, addr = self.sock.recvfrom(4096)
+                packet = parse_packet(data)
+                
+                if packet is None:
+                    self.log(f"Invalid packet received from {addr[0]}:{addr[1]} - dropped")
+                    continue
+                
+                packet_type = packet['packet_type']
+                
+                # Route packet to appropriate handler
+                if packet_type == MsgType.SYN:
+                    self.handle_syn(packet, addr)
+                elif packet_type == MsgType.ACK:
+                    # Check if this is a handshake ACK (sequence 0) or regular ACK
+                    if packet['sequence_number'] == 0 and packet['sender'] in self.client_registry:
+                        self.handle_ack_handshake(packet, addr)
+                    else:
+                        self.handle_ack(packet, addr)
+                elif packet_type == MsgType.DATA:
+                    self.handle_data(packet, addr)
+                elif packet_type == MsgType.GROUP_MSG:
+                    self.handle_group_msg(packet, addr)
+                elif packet_type == MsgType.JOIN:
+                    self.handle_join(packet, addr)
+                elif packet_type == MsgType.LEAVE:
+                    self.handle_leave(packet, addr)
+                elif packet_type == MsgType.HEARTBEAT:
+                    self.handle_heartbeat(packet, addr)
+                elif packet_type == MsgType.FIN:
+                    self.handle_fin(packet, addr)
+                else:
+                    self.log(f"Unknown packet type {packet_type} from {addr[0]}:{addr[1]}")
+                    
+            except Exception as e:
+                self.log(f"Error handling packet: {e}")
+        
+        self.sock.close()
 
 if __name__ == "__main__":
-    global sock
-    # creating a UDP socket
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(('0.0.0.0', PORT))
-    print(f"Server is running on port {PORT}")
-
-    while True:
-        data, addr = sock.recvfrom(1024)
-        handle_client(data, addr)
-
-    sock.close()
+    server = UDPServer(PORT)
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        server.log("Server shutting down...")
+        server.running = False
