@@ -6,9 +6,10 @@ from collections import defaultdict
 from enum import IntEnum
 from dataclasses import dataclass
 from typing import Dict, Set, Optional, Tuple
+import sys
 
 # Protocol Constants
-PORT = 5000
+PORT = 5001
 HEARTBEAT_INTERVAL = 30  # seconds
 CLIENT_TIMEOUT = 90  # seconds
 MAX_CLIENTS = 100
@@ -480,7 +481,8 @@ class UDPServer:
         self.sock.close()
 
 if __name__ == "__main__":
-    server = UDPServer(PORT)
+    port = int(sys.argv[1]) if len(sys.argv) > 1 else PORT
+    server = UDPServer(port)
     try:
         server.run()
     except KeyboardInterrupt:
