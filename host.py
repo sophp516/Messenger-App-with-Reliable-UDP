@@ -25,6 +25,10 @@ class MsgType(IntEnum):
     JOIN = 0x09
     LEAVE = 0x0A
     GROUP_MSG = 0x0B
+    LIST = 0x0C
+    GROUPS = 0x0D
+    LIST_RESPONSE = 0x0E
+    GROUPS_RESPONSE = 0x0F
 
 @dataclass
 class ClientInfo:
@@ -402,6 +406,53 @@ class UDPServer:
             if username in self.client_registry:
                 self.client_registry[username].last_seen = time.time()
     
+    def handle_list(self, packet: Dict, address: Tuple[str, int]):
+        """Handle LIST packet - send list of online users"""
+        sender = packet['sender']
+        
+        with self.lock:
+            if sender not in self.client_registry:
+                return
+            
+            self.client_registry[sender].last_seen = time.time()
+            
+            # Get list of online users
+            online_users = [username for username, info in self.client_registry.items() 
+                          if info.status == "ONLINE"]
+            user_list = ','.join(online_users)
+            
+            # Send ACK first
+            ack_packet = create_packet(MsgType.ACK, packet['sequence_number'], "SERVER", sender)
+            self.send_packet(ack_packet, address)
+            
+            # Send list response
+            response_packet = create_packet(MsgType.LIST_RESPONSE, 0, "SERVER", sender, 
+                                          user_list.encode('utf-8'))
+            self.send_packet(response_packet, address)
+    
+    def handle_groups(self, packet: Dict, address: Tuple[str, int]):
+        """Handle GROUPS packet - send list of available groups"""
+        sender = packet['sender']
+        
+        with self.lock:
+            if sender not in self.client_registry:
+                return
+            
+            self.client_registry[sender].last_seen = time.time()
+            
+            # Get list of groups
+            group_names = list(self.group_registry.keys())
+            groups_list = ','.join(group_names)
+            
+            # Send ACK first
+            ack_packet = create_packet(MsgType.ACK, packet['sequence_number'], "SERVER", sender)
+            self.send_packet(ack_packet, address)
+            
+            # Send groups response
+            response_packet = create_packet(MsgType.GROUPS_RESPONSE, 0, "SERVER", sender,
+                                          groups_list.encode('utf-8'))
+            self.send_packet(response_packet, address)
+    
     def cleanup_inactive_clients(self):
         """Periodically clean up inactive clients"""
         while self.running:
@@ -472,6 +523,10 @@ class UDPServer:
                     self.handle_heartbeat(packet, addr)
                 elif packet_type == MsgType.FIN:
                     self.handle_fin(packet, addr)
+                elif packet_type == MsgType.LIST:
+                    self.handle_list(packet, addr)
+                elif packet_type == MsgType.GROUPS:
+                    self.handle_groups(packet, addr)
                 else:
                     self.log(f"Unknown packet type {packet_type} from {addr[0]}:{addr[1]}")
                     

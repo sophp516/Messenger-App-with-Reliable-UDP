@@ -29,6 +29,10 @@ class MsgType(IntEnum):
     JOIN = 0x09
     LEAVE = 0x0A
     GROUP_MSG = 0x0B
+    LIST = 0x0C
+    GROUPS = 0x0D
+    LIST_RESPONSE = 0x0E
+    GROUPS_RESPONSE = 0x0F
 
 @dataclass
 class PendingMessage:
@@ -317,6 +321,10 @@ class UDPClient:
         self.send_packet(packet)
         return True
     
+    def create_group(self, group_name: str) -> bool:
+        """Create a new group (same as join, but with explicit intent)"""
+        return self.join_group(group_name)
+    
     def join_group(self, group_name: str) -> bool:
         """Join or create a group"""
         if not self.connected:
@@ -357,6 +365,52 @@ class UDPClient:
                 attempts=0,
                 recipient=group_name,
                 packet_type=MsgType.LEAVE,
+                last_retry_time=0.0
+            )
+        
+        self.send_packet(packet)
+        return True
+    
+    def request_user_list(self) -> bool:
+        """Request list of online users"""
+        if not self.connected:
+            print("Not connected to server")
+            return False
+        
+        seq_num = self.get_next_sequence()
+        packet = create_packet(MsgType.LIST, seq_num, self.username, "SERVER")
+        
+        with self.lock:
+            self.pending_messages[seq_num] = PendingMessage(
+                sequence_number=seq_num,
+                packet=packet,
+                send_time=time.time(),
+                attempts=0,
+                recipient="SERVER",
+                packet_type=MsgType.LIST,
+                last_retry_time=0.0
+            )
+        
+        self.send_packet(packet)
+        return True
+    
+    def request_groups_list(self) -> bool:
+        """Request list of available groups"""
+        if not self.connected:
+            print("Not connected to server")
+            return False
+        
+        seq_num = self.get_next_sequence()
+        packet = create_packet(MsgType.GROUPS, seq_num, self.username, "SERVER")
+        
+        with self.lock:
+            self.pending_messages[seq_num] = PendingMessage(
+                sequence_number=seq_num,
+                packet=packet,
+                send_time=time.time(),
+                attempts=0,
+                recipient="SERVER",
+                packet_type=MsgType.GROUPS,
                 last_retry_time=0.0
             )
         
@@ -421,6 +475,34 @@ class UDPClient:
         except UnicodeDecodeError:
             self.log("Error decoding error message")
     
+    def handle_list_response(self, packet: Dict):
+        """Handle LIST_RESPONSE packet"""
+        payload = packet['payload']
+        try:
+            user_list = payload.decode('utf-8')
+            print(f"\n[Online Users]:")
+            users = user_list.split(',') if user_list else []
+            for user in users:
+                if user.strip():
+                    print(f"  - {user.strip()}")
+            print(f"{self.username}> ", end='', flush=True)
+        except UnicodeDecodeError:
+            self.log("Error decoding user list")
+    
+    def handle_groups_response(self, packet: Dict):
+        """Handle GROUPS_RESPONSE packet"""
+        payload = packet['payload']
+        try:
+            groups_list = payload.decode('utf-8')
+            print(f"\n[Available Groups]:")
+            groups = groups_list.split(',') if groups_list else []
+            for group in groups:
+                if group.strip():
+                    print(f"  - {group.strip()}")
+            print(f"{self.username}> ", end='', flush=True)
+        except UnicodeDecodeError:
+            self.log("Error decoding groups list")
+    
     def recv_thread(self):
         """Thread for receiving and processing packets"""
         while self.running:
@@ -454,6 +536,10 @@ class UDPClient:
                     self.handle_ack(packet)
                 elif packet_type == MsgType.ERROR:
                     self.handle_error(packet)
+                elif packet_type == MsgType.LIST_RESPONSE:
+                    self.handle_list_response(packet)
+                elif packet_type == MsgType.GROUPS_RESPONSE:
+                    self.handle_groups_response(packet)
                 elif packet_type == MsgType.FIN:
                     # Server is disconnecting us
                     self.log("Server disconnected")
@@ -526,6 +612,8 @@ class UDPClient:
         print(f"{'='*60}\n")
         print("Commands:")
         print("  @username message  - Send a direct message")
+        print("  #groupname message - Send a message to a group")
+        print("  /create groupname  - Create a new group")
         print("  /join groupname    - Join or create a group")
         print("  /leave groupname   - Leave a group")
         print("  /list              - List online users")
@@ -556,6 +644,24 @@ class UDPClient:
                     else:
                         print("Usage: @username message")
                 
+                elif user_input.startswith("#"):
+                    # Group message: #groupname message
+                    parts = user_input[1:].split(" ", 1)
+                    if len(parts) == 2:
+                        group_name, message = parts
+                        self.send_group_message(group_name, message)
+                    else:
+                        print("Usage: #groupname message")
+                
+                elif user_input.startswith("/create "):
+                    # Create group
+                    group_name = user_input[8:].strip()
+                    if group_name:
+                        self.create_group(group_name)
+                        print(f"Creating group '{group_name}'...")
+                    else:
+                        print("Usage: /create groupname")
+                
                 elif user_input.startswith("/join "):
                     # Join group
                     group_name = user_input[6:].strip()
@@ -575,12 +681,12 @@ class UDPClient:
                         print("Usage: /leave groupname")
                 
                 elif user_input == "/list":
-                    # List online users (placeholder - would need server support)
-                    print("List command not yet implemented by server")
+                    # List online users
+                    self.request_user_list()
                 
                 elif user_input == "/groups":
-                    # List groups (placeholder - would need server support)
-                    print("Groups command not yet implemented by server")
+                    # List available groups
+                    self.request_groups_list()
                 
                 else:
                     print("Unknown command. Type /quit to exit.")
