@@ -14,7 +14,7 @@ from collections import deque
 from enum import IntEnum
 from typing import Dict, Optional, List, Tuple
 
-# Protocol constants (must match client.py and host.py)
+# Protocol constants
 class MsgType(IntEnum):
     DATA = 0x01
     ACK = 0x03
@@ -140,7 +140,7 @@ class TestClient:
     def send_packet(self, packet: bytes, simulate_loss: bool = False):
         """Send packet, optionally simulating loss"""
         if simulate_loss and SIMULATE_PACKET_LOSS and random.random() < PACKET_LOSS_RATE:
-            return  # Simulate packet loss
+            return  # simulate packet loss
         try:
             self.sock.sendto(packet, (self.host, self.port))
         except Exception as e:
@@ -302,7 +302,7 @@ def test_message_delivery(host: str, port: int):
     print("Sending message from alice to bob...")
     client1.send_message("bob", "Hello, Bob!")
     
-    # Give time for delivery
+    # give time for delivery
     time.sleep(0.5)
     client2.receive_messages(timeout=2.0)
     
@@ -339,11 +339,10 @@ def test_retransmission(host: str, port: int):
     print("Sending message with packet loss simulation...")
     client1.send_message("bob", "Test message with retransmission")
     
-    # Wait longer for retransmission
-    time.sleep(3.0)
+    time.sleep(3.0) # wait longer for retransmission
     client2.receive_messages(timeout=2.0)
     
-    # Retransmit unacked messages
+    # retransmit unacked messages
     current_time = time.time()
     with client1.lock:
         for seq_num, pending in list(client1.pending_messages.items()):
@@ -431,7 +430,7 @@ def test_multiple_clients(host: str, port: int, num_clients: int = 10):
     
     print(f"✓ {connected}/{num_clients} clients connected")
     
-    if connected < num_clients * 0.8:  # Allow 20% failure
+    if connected < num_clients * 0.8:  # allow 20% failure
         print("✗ Too many connection failures")
         for client in clients:
             client.disconnect()
