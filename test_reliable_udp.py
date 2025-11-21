@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Comprehensive test script for reliable UDP messaging system.
-Tests: connection, message delivery, retransmission, packet loss, group chat, etc.
+Test script for reliable UDP messaging system.
+Tests connection, message delivery, retransmission, packet loss, group chat, etc.
 """
 
 import socket
@@ -14,7 +14,7 @@ from collections import deque
 from enum import IntEnum
 from typing import Dict, Optional, List, Tuple
 
-# Protocol constants (must match client.py and host.py)
+# protocol constants
 class MsgType(IntEnum):
     DATA = 0x01
     ACK = 0x03
@@ -27,12 +27,12 @@ class MsgType(IntEnum):
     LEAVE = 0x0A
     GROUP_MSG = 0x0B
 
-# Packet loss simulation
+# packet loss simulation
 PACKET_LOSS_RATE = 0.0  # 0.0 = no loss, 0.1 = 10% loss, etc.
 SIMULATE_PACKET_LOSS = False
 
 def calculate_checksum(data: bytes) -> int:
-    """Calculate 16-bit checksum for packet"""
+    """Calculate checksum for packet"""
     checksum = 0
     for i in range(0, len(data), 2):
         if i + 1 < len(data):
@@ -44,7 +44,7 @@ def calculate_checksum(data: bytes) -> int:
 
 def create_packet(packet_type: int, sequence_number: int, sender: str, 
                   recipient: str, payload: bytes = b"") -> bytes:
-    """Create a packet with the specified fields"""
+    """Create a packet"""
     timestamp = time.time()
     sender_bytes = sender.encode('utf-8')
     recipient_bytes = recipient.encode('utf-8')
@@ -61,7 +61,7 @@ def create_packet(packet_type: int, sequence_number: int, sender: str,
     return header
 
 def parse_packet(data: bytes) -> Optional[Dict]:
-    """Parse a packet and return dictionary with fields, or None if invalid"""
+    """Parse a packet, return dict or None if invalid"""
     try:
         if len(data) < 19:
             return None
@@ -117,7 +117,7 @@ def parse_packet(data: bytes) -> Optional[Dict]:
         return None
 
 class TestClient:
-    """Simulated client for testing"""
+    """Test client for testing"""
     def __init__(self, username: str, host: str, port: int):
         self.username = username
         self.host = host
@@ -138,16 +138,16 @@ class TestClient:
             return self.sequence_number
     
     def send_packet(self, packet: bytes, simulate_loss: bool = False):
-        """Send packet, optionally simulating loss"""
+        """Send packet, optionally simulate loss"""
         if simulate_loss and SIMULATE_PACKET_LOSS and random.random() < PACKET_LOSS_RATE:
-            return  # Simulate packet loss
+            return  # simulate loss
         try:
             self.sock.sendto(packet, (self.host, self.port))
         except Exception as e:
             print(f"[{self.username}] Error sending: {e}")
     
     def connect(self) -> bool:
-        """Establish connection"""
+        """Connect to server"""
         try:
             syn_packet = create_packet(MsgType.SYN, 0, self.username, "SERVER")
             self.send_packet(syn_packet)
@@ -170,7 +170,7 @@ class TestClient:
             return False
     
     def send_message(self, recipient: str, message: str) -> bool:
-        """Send a message"""
+        """Send message"""
         if not self.connected:
             return False
         
@@ -190,7 +190,7 @@ class TestClient:
         return True
     
     def send_group_message(self, group_name: str, message: str) -> bool:
-        """Send a group message"""
+        """Send group message"""
         if not self.connected:
             return False
         
@@ -210,7 +210,7 @@ class TestClient:
         return True
     
     def join_group(self, group_name: str) -> bool:
-        """Join a group"""
+        """Join group"""
         if not self.connected:
             return False
         
@@ -220,7 +220,7 @@ class TestClient:
         return True
     
     def receive_messages(self, timeout: float = 1.0):
-        """Receive and process messages"""
+        """Receive messages"""
         start_time = time.time()
         while time.time() - start_time < timeout:
             try:
@@ -242,7 +242,7 @@ class TestClient:
                                 'seq': seq_num
                             })
                     
-                    # Send ACK
+                    # send ACK
                     ack_packet = create_packet(MsgType.ACK, seq_num, self.username, packet['sender'])
                     self.send_packet(ack_packet, simulate_loss=True)
                 
@@ -259,7 +259,7 @@ class TestClient:
                     print(f"[{self.username}] Receive error: {e}")
     
     def disconnect(self):
-        """Disconnect from server"""
+        """Disconnect"""
         if self.connected:
             fin_packet = create_packet(MsgType.FIN, 0, self.username, "SERVER")
             self.send_packet(fin_packet)
@@ -268,7 +268,7 @@ class TestClient:
         self.sock.close()
 
 def test_basic_connection(host: str, port: int):
-    """Test 1: Basic connection"""
+    """Test basic connection"""
     print("\n" + "="*60)
     print("TEST 1: Basic Connection")
     print("="*60)
@@ -287,7 +287,7 @@ def test_basic_connection(host: str, port: int):
         return False
 
 def test_message_delivery(host: str, port: int):
-    """Test 2: Message delivery"""
+    """Test message delivery"""
     print("\n" + "="*60)
     print("TEST 2: Message Delivery")
     print("="*60)
@@ -302,7 +302,7 @@ def test_message_delivery(host: str, port: int):
     print("Sending message from alice to bob...")
     client1.send_message("bob", "Hello, Bob!")
     
-    # Give time for delivery
+    # give time for delivery
     time.sleep(0.5)
     client2.receive_messages(timeout=2.0)
     
@@ -318,7 +318,7 @@ def test_message_delivery(host: str, port: int):
         return False
 
 def test_retransmission(host: str, port: int):
-    """Test 3: Retransmission with packet loss"""
+    """Test retransmission with packet loss"""
     print("\n" + "="*60)
     print("TEST 3: Retransmission (with 25% packet loss)")
     print("="*60)
@@ -339,11 +339,10 @@ def test_retransmission(host: str, port: int):
     print("Sending message with packet loss simulation...")
     client1.send_message("bob", "Test message with retransmission")
     
-    # Wait longer for retransmission
-    time.sleep(3.0)
+    time.sleep(3.0)  # wait for retransmission
     client2.receive_messages(timeout=2.0)
     
-    # Retransmit unacked messages
+    # retransmit unacked
     current_time = time.time()
     with client1.lock:
         for seq_num, pending in list(client1.pending_messages.items()):
@@ -366,7 +365,7 @@ def test_retransmission(host: str, port: int):
     return success
 
 def test_group_chat(host: str, port: int):
-    """Test 4: Group chat"""
+    """Test group chat"""
     print("\n" + "="*60)
     print("TEST 4: Group Chat")
     print("="*60)
@@ -412,7 +411,7 @@ def test_group_chat(host: str, port: int):
         return False
 
 def test_multiple_clients(host: str, port: int, num_clients: int = 10):
-    """Test 5: Multiple concurrent clients"""
+    """Test multiple concurrent clients"""
     print("\n" + "="*60)
     print(f"TEST 5: Multiple Concurrent Clients ({num_clients} clients)")
     print("="*60)
@@ -431,7 +430,7 @@ def test_multiple_clients(host: str, port: int, num_clients: int = 10):
     
     print(f"✓ {connected}/{num_clients} clients connected")
     
-    if connected < num_clients * 0.8:  # Allow 20% failure
+    if connected < num_clients * 0.8:  # allow 20% failures
         print("✗ Too many connection failures")
         for client in clients:
             client.disconnect()
@@ -452,10 +451,10 @@ def test_multiple_clients(host: str, port: int, num_clients: int = 10):
     for client in clients:
         client.disconnect()
     
-    return received_count >= 3  # At least 3 messages should be received
+    return received_count >= 3  # at least 3 messages should be received
 
 def test_duplicate_detection(host: str, port: int):
-    """Test 6: Duplicate packet detection"""
+    """Test duplicate packet detection"""
     print("\n" + "="*60)
     print("TEST 6: Duplicate Packet Detection")
     print("="*60)
@@ -512,7 +511,7 @@ def main():
     
     results = []
     
-    # Run tests
+    # run tests
     results.append(("Basic Connection", test_basic_connection(host, port)))
     time.sleep(1)
     
@@ -530,7 +529,7 @@ def main():
     
     results.append(("Duplicate Detection", test_duplicate_detection(host, port)))
     
-    # Print summary
+    # print summary
     print("\n" + "="*60)
     print("TEST SUMMARY")
     print("="*60)

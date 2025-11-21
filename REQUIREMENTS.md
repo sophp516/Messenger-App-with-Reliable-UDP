@@ -5,23 +5,22 @@ Authors: Sophie Park, Joyce Zou
 
 ## Project Overview
 
-The Messenger App with Reliable UDP is a lightweight chat system designed to provide dependable message delivery over UDP. Unlike TCP-based messengers, it recreates reliability at the application layer, allowing us to study retransmission, sequencing, and connection control directly.
+The Messenger App with Reliable UDP is a chat system designed to provide dependable message delivery over UDP. Unlike TCP-based messengers, it recreates reliability at the application layer, allowing us to study retransmission, sequencing, and connection control directly.
 
 The system supports:
 • 1:1 Messaging: private chats between two users.
-• Group Messaging: broadcasting to multi-member chatrooms. [Extension Feature if time allows]
+• Group Messaging: broadcasting to multi-member chatrooms.
 • Reliability: acknowledgments, retransmissions, and duplicate detection over UDP.
 • Connection Management: connection setup (three-way handshake), periodic heartbeats, and graceful teardown.
-
-The app demonstrates how real-world messaging systems handle reliability and connection management over stateless transport.
+• User and Group Discovery: list online users and available groups.
 
 
 ## Purpose and Users
 
-The system serves students, developers, and instructors exploring networking fundamentals. Its goal is to:
-• Illustrate how reliable communication can be achieved without TCP.
-• Provide an educational platform for experimenting with message delivery, packet loss, and network latency.
-• Offer a functional chat environment for testing concurrent UDP clients.
+The system serves users who want to communicate online:
+• One-on-one messaging between two users
+• Group messaging to multiple members
+• A functional chat environment for testing concurrent UDP clients
 
 
 ## Major Entities
@@ -39,11 +38,13 @@ The system serves students, developers, and instructors exploring networking fun
 Client Functions
 • Establish UDP connection to host through a three-way handshake (SYN → SYN-ACK → ACK).
 • Send private or group messages via structured packets.
+• Join/create groups and leave groups.
+• List online users and available groups.
 • Maintain connection status and attempt reconnection up to 3× on timeout.
 • Display real-time incoming messages and delivery confirmations.
 
 Server Functions
-• Accept and manage multiple concurrent clients.
+• Accept and manage multiple concurrent clients (up to 100).
 • Route 1:1 messages to intended recipients and broadcast group messages.
 • Track sequence numbers for each client to detect duplicates.
 • Log connection, message, and error events for debugging.
@@ -52,7 +53,7 @@ Server Functions
 Reliability and Error Recovery
 • Each message carries a unique sequence number.
 • Receivers send ACKs for successful receipt.
-• Unacknowledged packets are retransmitted with exponential backoff (500 ms → 1 s → 2 s…).
+• Unacknowledged packets are retransmitted with exponential backoff (500 ms → 1 s → 2 s…, max 8 s).
 • Duplicates are ignored but ACKed to suppress further retries.
 • Malformed packets (bad checksum or missing fields) are dropped and logged.
 
@@ -73,11 +74,11 @@ Reliability and Error Recovery
 
 ### Network Structure
 
-A single host machine (default port 8080) handles multiple client sockets concurrently.
+A single host machine (default port 5001) handles multiple client sockets concurrently.
 Messages are serialized using a lightweight binary header containing:
 
 ### Field Purpose
-Message Type (1 B) DATA, ACK, SYN, FIN, etc.
+Message Type (1 B) DATA, ACK, SYN, SYN_ACK, FIN, HEARTBEAT, ERROR, JOIN, LEAVE, GROUP_MSG, LIST, GROUPS, LIST_RESPONSE, GROUPS_RESPONSE
 Seq Num (4 B) Ensures ordering & reliability.
 Source / Dest IDs Identify sender and recipient.
 Payload Len + Flags + Timestamp + Checksum Integrity and timing data.
