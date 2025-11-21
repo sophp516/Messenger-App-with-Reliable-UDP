@@ -29,6 +29,7 @@ class MsgType(IntEnum):
     LIST_RESPONSE = 0x0E
     GROUPS_RESPONSE = 0x0F
 
+@dataclass
 class ClientInfo:
     username: str
     address: Tuple[str, int]
