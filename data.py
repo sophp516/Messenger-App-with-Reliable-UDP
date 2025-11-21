@@ -13,20 +13,6 @@ class MsgType(IntEnum):
     GROUPS = 0x0D
     LIST_RESPONSE = 0x0E
     GROUPS_RESPONSE = 0x0F
-
-
-
-  # Packet structure (same as host.py):
-    # packet_type (1 byte)
-    # sequence_number (4 bytes, unsigned int)
-    # timestamp (8 bytes, double)
-    # sender_len (2 bytes, unsigned short)
-    # sender (variable)
-    # recipient_len (2 bytes, unsigned short)
-    # recipient (variable)
-    # payload_len (4 bytes, unsigned int)
-    # payload (variable)
-    # checksum (2 bytes, unsigned short)
     
 class PendingMessage:
     sequence_number: int
