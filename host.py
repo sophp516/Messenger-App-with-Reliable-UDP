@@ -58,7 +58,7 @@ class Group:
         return username in self.members
 
 def calculate_checksum(data: bytes) -> int:
-    """Calculate 16-bit checksum for packet"""
+    """Calculate checksum for packet"""
     checksum = 0
     for i in range(0, len(data), 2):
         if i + 1 < len(data):
@@ -70,10 +70,10 @@ def calculate_checksum(data: bytes) -> int:
 
 def create_packet(packet_type: int, sequence_number: int, sender: str, 
                   recipient: str, payload: bytes = b"") -> bytes:
-    """Create a packet with the specified fields"""
+    """Create a packet"""
     timestamp = time.time()
     
-    # encode strings to bytes
+    # encode strings
     sender_bytes = sender.encode('utf-8')
     recipient_bytes = recipient.encode('utf-8')
     
@@ -96,7 +96,7 @@ def create_packet(packet_type: int, sequence_number: int, sender: str,
     header += struct.pack('!I', len(payload))
     header += payload
     
-    # calculate checksum on everything except checksum field
+    # calculate checksum
     checksum = calculate_checksum(header)
     header += struct.pack('!H', checksum)
     
@@ -151,7 +151,7 @@ def parse_packet(data: bytes) -> Optional[Dict]:
         packet_without_checksum = data[:offset]
         calculated_checksum = calculate_checksum(packet_without_checksum)
         
-        if received_checksum != calculated_checksum: # if checksum is invalid, return None
+        if received_checksum != calculated_checksum:
             return None
         
         return {
@@ -179,18 +179,18 @@ class UDPServer:
         self.running = True
         
     def get_next_sequence(self) -> int:
-        """Get next sequence number for server-originated packets"""
+        """Get next sequence number"""
         with self.lock:
             self.sequence_counter += 1
             return self.sequence_counter
     
     def log(self, message: str):
-        """Log a message with timestamp"""
+        """Print log message with timestamp"""
         timestamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
         print(f"[{timestamp}] {message}")
     
     def send_packet(self, packet: bytes, address: Tuple[str, int]):
-        """Send a packet to the specified address"""
+        """Send packet to address"""
         try:
             self.sock.sendto(packet, address)
         except Exception as e:
@@ -231,7 +231,7 @@ class UDPServer:
         self.send_packet(syn_ack_packet, address)
     
     def handle_ack_handshake(self, packet: Dict, address: Tuple[str, int]):
-        """Handle ACK packet from handshake - mark client as connected"""
+        """Handle ACK from handshake - mark client connected"""
         username = packet['sender']
         
         with self.lock:
@@ -270,9 +270,9 @@ class UDPServer:
                 self.send_packet(error_packet, address)
     
     def handle_group_msg(self, packet: Dict, address: Tuple[str, int]):
-        """Handle GROUP_MSG packet - broadcast to group members"""
+        """Handle GROUP_MSG - broadcast to group"""
         sender = packet['sender']
-        group_name = packet['recipient']  # recipient field contains group name
+        group_name = packet['recipient']  # recipient is group name
         seq_num = packet['sequence_number']
         payload = packet['payload']
         
@@ -295,7 +295,7 @@ class UDPServer:
             
             group = self.group_registry[group_name]
             
-            # check if sender is a member
+            # check if sender is member
             if not group.has_member(sender):
                 error_payload = f"You are not a member of group '{group_name}'.".encode('utf-8')
                 error_packet = create_packet(MsgType.ERROR, seq_num, "SERVER", sender, error_payload)
@@ -361,7 +361,7 @@ class UDPServer:
             self.send_packet(ack_packet, address)
     
     def handle_heartbeat(self, packet: Dict, address: Tuple[str, int]):
-        """Handle HEARTBEAT packet - update last_seen"""
+        """Handle HEARTBEAT - update last_seen"""
         username = packet['sender']
         
         with self.lock:
