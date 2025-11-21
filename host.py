@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from typing import Dict, Set, Optional, Tuple
 import sys
 
-# Protocol Constants
 PORT = 5001
 HEARTBEAT_INTERVAL = 30  # seconds
 CLIENT_TIMEOUT = 90  # seconds
@@ -30,7 +29,6 @@ class MsgType(IntEnum):
     LIST_RESPONSE = 0x0E
     GROUPS_RESPONSE = 0x0F
 
-@dataclass
 class ClientInfo:
     username: str
     address: Tuple[str, int]
@@ -42,10 +40,10 @@ class ClientInfo:
 class Group:
     def __init__(self, group_name: str, admin: str):
         self.group_name = group_name
-        self.admin = admin
+        self.admin = admin # username of creator
         self.members: Set[str] = set([admin])
         self.created_at = time.time()
-        self.message_history = []  # Optional: fixed-size ring buffer
+        self.message_history = []
 
     def add_member(self, member: str):
         self.members.add(member)
@@ -75,11 +73,11 @@ def create_packet(packet_type: int, sequence_number: int, sender: str,
     """Create a packet with the specified fields"""
     timestamp = time.time()
     
-    # Encode strings
+    # encode strings to bytes
     sender_bytes = sender.encode('utf-8')
     recipient_bytes = recipient.encode('utf-8')
     
-    # Packet structure:
+    # packet structure:
     # packet_type (1 byte)
     # sequence_number (4 bytes, unsigned int)
     # timestamp (8 bytes, double)
@@ -98,7 +96,7 @@ def create_packet(packet_type: int, sequence_number: int, sender: str,
     header += struct.pack('!I', len(payload))
     header += payload
     
-    # Calculate checksum on everything except checksum field
+    # calculate checksum on everything except checksum field
     checksum = calculate_checksum(header)
     header += struct.pack('!H', checksum)
     
@@ -107,10 +105,10 @@ def create_packet(packet_type: int, sequence_number: int, sender: str,
 def parse_packet(data: bytes) -> Optional[Dict]:
     """Parse a packet and return dictionary with fields, or None if invalid"""
     try:
-        if len(data) < 19:  # Minimum size for header
+        if len(data) < 19:  # minimum size for header
             return None
         
-        # Parse fixed header
+        # parse fixed header
         packet_type, seq_num, timestamp, sender_len = struct.unpack('!B I d H', data[:15])
         
         offset = 15
@@ -120,7 +118,7 @@ def parse_packet(data: bytes) -> Optional[Dict]:
         sender = data[offset:offset + sender_len].decode('utf-8')
         offset += sender_len
         
-        if offset + 2 > len(data):
+        if offset + 2 > len(data): # check if recipient length is valid
             return None
         
         recipient_len, = struct.unpack('!H', data[offset:offset + 2])
@@ -149,11 +147,11 @@ def parse_packet(data: bytes) -> Optional[Dict]:
         
         received_checksum, = struct.unpack('!H', data[offset:offset + 2])
         
-        # Verify checksum
+        # verify checksum
         packet_without_checksum = data[:offset]
         calculated_checksum = calculate_checksum(packet_without_checksum)
         
-        if received_checksum != calculated_checksum:
+        if received_checksum != calculated_checksum: # if checksum is invalid, return None
             return None
         
         return {
@@ -203,17 +201,17 @@ class UDPServer:
         username = packet['sender']
         
         with self.lock:
-            # Check if username already exists
+            # check if username already exists
             if username in self.client_registry:
-                # Client reconnecting - update address
+                # client reconnecting - update address
                 self.client_registry[username].address = address
                 self.client_registry[username].last_seen = time.time()
                 self.client_registry[username].status = "ONLINE"
                 self.log(f"Client '{username}' reconnected from {address[0]}:{address[1]}")
             else:
-                # New client
+                # new client
                 if len(self.client_registry) >= MAX_CLIENTS:
-                    # Send error packet
+                    # send error packet
                     error_payload = "Server is full. Maximum clients reached.".encode('utf-8')
                     error_packet = create_packet(MsgType.ERROR, 0, "SERVER", username, error_payload)
                     self.send_packet(error_packet, address)
@@ -228,7 +226,7 @@ class UDPServer:
                 )
                 self.log(f"Client '{username}' connected from {address[0]}:{address[1]}")
         
-        # Send SYN_ACK
+        # send SYN_ACK
         syn_ack_packet = create_packet(MsgType.SYN_ACK, 0, "SERVER", username)
         self.send_packet(syn_ack_packet, address)
     
@@ -249,25 +247,24 @@ class UDPServer:
         payload = packet['payload']
         
         with self.lock:
-            # Verify sender is registered
+            # verify sender is registered
             if sender not in self.client_registry:
                 return
             
-            # Update sender's last_seen
+            # update sender's last_seen
             self.client_registry[sender].last_seen = time.time()
             
-            # Send ACK to sender
+            # send ACK to sender
             ack_packet = create_packet(MsgType.ACK, seq_num, "SERVER", sender)
             self.send_packet(ack_packet, address)
             
-            # Forward to recipient
             if recipient in self.client_registry:
                 recipient_info = self.client_registry[recipient]
                 data_packet = create_packet(MsgType.DATA, seq_num, sender, recipient, payload)
                 self.send_packet(data_packet, recipient_info.address)
                 self.log(f"Message relayed: {sender} -> {recipient}")
             else:
-                # Recipient not found - send error to sender
+                # recipient not found -> send error to sender
                 error_payload = f"User '{recipient}' is not online.".encode('utf-8')
                 error_packet = create_packet(MsgType.ERROR, seq_num, "SERVER", sender, error_payload)
                 self.send_packet(error_packet, address)
@@ -285,11 +282,11 @@ class UDPServer:
             
             self.client_registry[sender].last_seen = time.time()
             
-            # Send ACK to sender
+            # send ACK to sender
             ack_packet = create_packet(MsgType.ACK, seq_num, "SERVER", sender)
             self.send_packet(ack_packet, address)
             
-            # Check if group exists
+            # check if group exists
             if group_name not in self.group_registry:
                 error_payload = f"Group '{group_name}' does not exist.".encode('utf-8')
                 error_packet = create_packet(MsgType.ERROR, seq_num, "SERVER", sender, error_payload)
@@ -298,14 +295,14 @@ class UDPServer:
             
             group = self.group_registry[group_name]
             
-            # Check if sender is a member
+            # check if sender is a member
             if not group.has_member(sender):
                 error_payload = f"You are not a member of group '{group_name}'.".encode('utf-8')
                 error_packet = create_packet(MsgType.ERROR, seq_num, "SERVER", sender, error_payload)
                 self.send_packet(error_packet, address)
                 return
             
-            # Broadcast to all members except sender
+            # broadcast to all members except sender
             for member in group.get_members():
                 if member != sender and member in self.client_registry:
                     member_info = self.client_registry[member]
@@ -325,16 +322,16 @@ class UDPServer:
             
             self.client_registry[sender].last_seen = time.time()
             
-            # Create group if it doesn't exist
+            # create group if it doesn't exist
             if group_name not in self.group_registry:
-                self.group_registry[group_name] = Group(group_name, sender)
+                self.group_registry[group_name] = Group(group_name, sender) # sender is the admin
                 self.log(f"Group '{group_name}' created by '{sender}'")
             else:
-                # Add member to existing group
+                # add member to existing group
                 self.group_registry[group_name].add_member(sender)
                 self.log(f"Client '{sender}' joined group '{group_name}'")
             
-            # Send ACK
+            # send ACK
             ack_packet = create_packet(MsgType.ACK, packet['sequence_number'], "SERVER", sender)
             self.send_packet(ack_packet, address)
     
@@ -355,11 +352,11 @@ class UDPServer:
                     group.remove_member(sender)
                     self.log(f"Client '{sender}' left group '{group_name}'")
                     
-                    # Remove group if empty
+                    # remove group if empty
                     if len(group.get_members()) == 0:
                         del self.group_registry[group_name]
             
-            # Send ACK
+            # send ACK
             ack_packet = create_packet(MsgType.ACK, packet['sequence_number'], "SERVER", sender)
             self.send_packet(ack_packet, address)
     
@@ -378,7 +375,7 @@ class UDPServer:
         
         with self.lock:
             if username in self.client_registry:
-                # Remove from all groups
+                # remove from all groups
                 groups_to_remove = []
                 for group_name, group in self.group_registry.items():
                     if group.has_member(username):
@@ -389,17 +386,17 @@ class UDPServer:
                 for group_name in groups_to_remove:
                     del self.group_registry[group_name]
                 
-                # Remove client
+                # remove client
                 del self.client_registry[username]
                 self.log(f"Client '{username}' disconnected")
         
-        # Send FIN_ACK
+        # send FIN_ACK
         fin_ack_packet = create_packet(MsgType.FIN, 0, "SERVER", username)
         self.send_packet(fin_ack_packet, address)
     
     def handle_ack(self, packet: Dict, address: Tuple[str, int]):
         """Handle ACK packet - mark message as delivered"""
-        # ACKs are handled by clients, but we can update last_seen
+        # update last_seen for sender
         username = packet['sender']
         
         with self.lock:
@@ -416,16 +413,16 @@ class UDPServer:
             
             self.client_registry[sender].last_seen = time.time()
             
-            # Get list of online users
+            # get list of online users
             online_users = [username for username, info in self.client_registry.items() 
                           if info.status == "ONLINE"]
             user_list = ','.join(online_users)
             
-            # Send ACK first
+            # send ACK first
             ack_packet = create_packet(MsgType.ACK, packet['sequence_number'], "SERVER", sender)
             self.send_packet(ack_packet, address)
             
-            # Send list response
+            # then send list response
             response_packet = create_packet(MsgType.LIST_RESPONSE, 0, "SERVER", sender, 
                                           user_list.encode('utf-8'))
             self.send_packet(response_packet, address)
@@ -440,15 +437,12 @@ class UDPServer:
             
             self.client_registry[sender].last_seen = time.time()
             
-            # Get list of groups
             group_names = list(self.group_registry.keys())
             groups_list = ','.join(group_names)
-            
-            # Send ACK first
+        
             ack_packet = create_packet(MsgType.ACK, packet['sequence_number'], "SERVER", sender)
             self.send_packet(ack_packet, address)
             
-            # Send groups response
             response_packet = create_packet(MsgType.GROUPS_RESPONSE, 0, "SERVER", sender,
                                           groups_list.encode('utf-8'))
             self.send_packet(response_packet, address)
@@ -456,7 +450,7 @@ class UDPServer:
     def cleanup_inactive_clients(self):
         """Periodically clean up inactive clients"""
         while self.running:
-            time.sleep(10)  # Check every 10 seconds
+            time.sleep(10)  # check every 10 seconds
             
             current_time = time.time()
             clients_to_remove = []
@@ -467,7 +461,7 @@ class UDPServer:
                         clients_to_remove.append(username)
                 
                 for username in clients_to_remove:
-                    # Remove from groups
+                    # remove from groups
                     groups_to_remove = []
                     for group_name, group in self.group_registry.items():
                         if group.has_member(username):
@@ -478,7 +472,7 @@ class UDPServer:
                     for group_name in groups_to_remove:
                         del self.group_registry[group_name]
                     
-                    # Remove client
+                    # remove client
                     del self.client_registry[username]
                     self.log(f"Client '{username}' timed out and removed")
     
@@ -487,7 +481,7 @@ class UDPServer:
         self.log(f"Server started on port {self.port}")
         self.log("Listening for connections...")
         
-        # Start cleanup thread
+        # start cleanup thread to remove inactive clients
         cleanup_thread = threading.Thread(target=self.cleanup_inactive_clients, daemon=True)
         cleanup_thread.start()
         
@@ -502,11 +496,11 @@ class UDPServer:
                 
                 packet_type = packet['packet_type']
                 
-                # Route packet to appropriate handler
+                # route packet to appropriate handler
                 if packet_type == MsgType.SYN:
                     self.handle_syn(packet, addr)
                 elif packet_type == MsgType.ACK:
-                    # Check if this is a handshake ACK (sequence 0) or regular ACK
+                    # check if this is a handshake ACK (sequence 0) or regular ACK
                     if packet['sequence_number'] == 0 and packet['sender'] in self.client_registry:
                         self.handle_ack_handshake(packet, addr)
                     else:
