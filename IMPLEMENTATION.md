@@ -44,13 +44,18 @@ Listening for connections...
 
 ```
 Packet:
-    - packet_type: enum (DATA, ACK, JOIN, LEAVE, GROUP_MSG)
+    - packet_type: enum (DATA, ACK, SYN, SYN_ACK, FIN, HEARTBEAT, ERROR,
+                         JOIN, LEAVE, GROUP_MSG, LIST, GROUPS,
+                         LIST_RESPONSE, GROUPS_RESPONSE)
     - sequence_number: integer (32-bit)
-    - timestamp: float
-    - sender: string
-    - recipient: string (or group_name for group messages)
-    - payload: bytes
-    - checksum: integer (16-bit)
+    - timestamp: double (64-bit)
+    - sender_len: unsigned short (2 bytes)
+    - sender: string (variable length, UTF-8)
+    - recipient_len: unsigned short (2 bytes)
+    - recipient: string (variable length, UTF-8, or group name)
+    - payload_len: unsigned int (4 bytes)
+    - payload: bytes (variable length)
+    - checksum: unsigned short (16-bit)
 ```
 
 ### Client Registry - Who is in the system? (Server Side)

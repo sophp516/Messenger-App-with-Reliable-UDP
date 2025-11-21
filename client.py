@@ -1,3 +1,11 @@
+''''
+Joyce and Sophie's UDP Messaging Client
+
+Citing LLM on 
+ - Retry and Retransmission logic on how to track unacknowledged messages and retransmit them using exponential backoffs 
+- Helped w. packet parsing 
+'''
+
 import socket
 import struct
 import time
@@ -6,9 +14,9 @@ from collections import deque
 from enum import IntEnum
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
+from data import MsgType, PendingMessage
 import sys
 
-# Protocol Constants (must match host.py)
 HOST = "127.0.0.1"
 PORT = 5001
 HEARTBEAT_INTERVAL = 30  # seconds
@@ -17,32 +25,6 @@ MAX_RETRIES = 3
 INITIAL_RETRANSMIT_DELAY = 0.5  # 500ms
 MAX_RETRANSMIT_DELAY = 8.0  # 8 seconds
 RECEIVED_SEQ_WINDOW_SIZE = 100
-
-class MsgType(IntEnum):
-    DATA = 0x01
-    ACK = 0x03
-    SYN = 0x04
-    SYN_ACK = 0x05
-    FIN = 0x06
-    HEARTBEAT = 0x07
-    ERROR = 0x08
-    JOIN = 0x09
-    LEAVE = 0x0A
-    GROUP_MSG = 0x0B
-    LIST = 0x0C
-    GROUPS = 0x0D
-    LIST_RESPONSE = 0x0E
-    GROUPS_RESPONSE = 0x0F
-
-@dataclass
-class PendingMessage:
-    sequence_number: int
-    packet: bytes
-    send_time: float
-    attempts: int
-    recipient: str
-    packet_type: int
-    last_retry_time: float = 0.0
 
 def calculate_checksum(data: bytes) -> int:
     """Calculate 16-bit checksum for packet"""
@@ -63,19 +45,6 @@ def create_packet(packet_type: int, sequence_number: int, sender: str,
     # Encode strings
     sender_bytes = sender.encode('utf-8')
     recipient_bytes = recipient.encode('utf-8')
-    
-    # Packet structure (same as host.py):
-    # packet_type (1 byte)
-    # sequence_number (4 bytes, unsigned int)
-    # timestamp (8 bytes, double)
-    # sender_len (2 bytes, unsigned short)
-    # sender (variable)
-    # recipient_len (2 bytes, unsigned short)
-    # recipient (variable)
-    # payload_len (4 bytes, unsigned int)
-    # payload (variable)
-    # checksum (2 bytes, unsigned short)
-    
     header = struct.pack('!B I d H', packet_type, sequence_number, timestamp, len(sender_bytes))
     header += sender_bytes
     header += struct.pack('!H', len(recipient_bytes))
