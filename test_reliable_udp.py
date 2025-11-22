@@ -1,7 +1,19 @@
 #!/usr/bin/env python3
 """
-Test script for reliable UDP messaging system.
-Tests connection, message delivery, retransmission, packet loss, group chat, etc.
+Joyce and Sophie 
+Testing script for reliable UDP messaging system.
+
+Things that we will be testing for: 
+
+
+- Functional: message send/receive, retransmission, connection teardown.
+- Reliability: simulate 10%, 25%, 50% packet loss.
+- Stress: running 20 clients concurrently using thread simulation 
+- Edge: duplicate packets, out-of-order delivery.
+
+Used LLM to help generate TestClient to ensure our protocols are working as expect and predictably behavior and get around
+with testing not using the interface (ignore the heartbeat stuff, threading, and waiting for input stuff )
+
 """
 
 import socket
@@ -13,24 +25,16 @@ import sys
 from collections import deque
 from enum import IntEnum
 from typing import Dict, Optional, List, Tuple
-
-# protocol constants
-class MsgType(IntEnum):
-    DATA = 0x01
-    ACK = 0x03
-    SYN = 0x04
-    SYN_ACK = 0x05
-    FIN = 0x06
-    FIN_ACK = 0x10
-    HEARTBEAT = 0x07
-    ERROR = 0x08
-    JOIN = 0x09
-    LEAVE = 0x0A
-    GROUP_MSG = 0x0B
-
-# packet loss simulation
+from data import MsgType, MessageStatus
 PACKET_LOSS_RATE = 0.0  # 0.0 = no loss, 0.1 = 10% loss, etc.
 SIMULATE_PACKET_LOSS = False
+
+
+def log_section(title: str) -> None:
+    """Print a nicely formatted section header."""
+    print("\n" + "=" * 60)
+    print(title)
+    print("=" * 60)
 
 def calculate_checksum(data: bytes) -> int:
     """Calculate checksum for packet"""
@@ -270,9 +274,7 @@ class TestClient:
 
 def test_basic_connection(host: str, port: int):
     """Test basic connection"""
-    print("\n" + "="*60)
-    print("TEST 1: Basic Connection")
-    print("="*60)
+    log_section("TEST 1: Basic Connection")
     
     client1 = TestClient("alice", host, port)
     client2 = TestClient("bob", host, port)
@@ -289,9 +291,7 @@ def test_basic_connection(host: str, port: int):
 
 def test_message_delivery(host: str, port: int):
     """Test message delivery"""
-    print("\n" + "="*60)
-    print("TEST 2: Message Delivery")
-    print("="*60)
+    log_section("TEST 2: Message Delivery")
     
     client1 = TestClient("alice", host, port)
     client2 = TestClient("bob", host, port)
@@ -318,15 +318,13 @@ def test_message_delivery(host: str, port: int):
         client2.disconnect()
         return False
 
-def test_retransmission(host: str, port: int):
-    """Test retransmission with packet loss"""
-    print("\n" + "="*60)
-    print("TEST 3: Retransmission (with 25% packet loss)")
-    print("="*60)
+def test_retransmission(host: str, port: int, loss_rate: float = 0.25):
+    """Test retransmission with a configurable packet loss rate."""
+    log_section(f"TEST 3: Retransmission (with {int(loss_rate * 100)}% packet loss)")
     
     global PACKET_LOSS_RATE, SIMULATE_PACKET_LOSS
     SIMULATE_PACKET_LOSS = True
-    PACKET_LOSS_RATE = 0.25
+    PACKET_LOSS_RATE = loss_rate
     
     client1 = TestClient("alice", host, port)
     client2 = TestClient("bob", host, port)
@@ -367,9 +365,7 @@ def test_retransmission(host: str, port: int):
 
 def test_group_chat(host: str, port: int):
     """Test group chat"""
-    print("\n" + "="*60)
-    print("TEST 4: Group Chat")
-    print("="*60)
+    log_section("TEST 4: Group Chat")
     
     client1 = TestClient("alice", host, port)
     client2 = TestClient("bob", host, port)
@@ -411,11 +407,9 @@ def test_group_chat(host: str, port: int):
         client3.disconnect()
         return False
 
-def test_multiple_clients(host: str, port: int, num_clients: int = 10):
+def test_multiple_clients(host: str, port: int, num_clients: int = 20):
     """Test multiple concurrent clients"""
-    print("\n" + "="*60)
-    print(f"TEST 5: Multiple Concurrent Clients ({num_clients} clients)")
-    print("="*60)
+    log_section(f"TEST 5: Multiple Concurrent Clients ({num_clients} clients)")
     
     clients = []
     for i in range(num_clients):
@@ -456,9 +450,7 @@ def test_multiple_clients(host: str, port: int, num_clients: int = 10):
 
 def test_duplicate_detection(host: str, port: int):
     """Test duplicate packet detection"""
-    print("\n" + "="*60)
-    print("TEST 6: Duplicate Packet Detection")
-    print("="*60)
+    log_section("TEST 6: Duplicate Packet Detection")
     
     client1 = TestClient("alice", host, port)
     client2 = TestClient("bob", host, port)
@@ -495,6 +487,46 @@ def test_duplicate_detection(host: str, port: int):
         client2.disconnect()
         return False
 
+
+def test_out_of_order_delivery(host: str, port: int):
+    """Test that out-of-order packets are both delivered exactly once."""
+    log_section("TEST 7: Out-of-Order Delivery")
+    
+    sender = TestClient("edge_alice", host, port)
+    receiver = TestClient("edge_bob", host, port)
+    
+    if not (sender.connect() and receiver.connect()):
+        print("✗ Connection failed for out-of-order test")
+        sender.disconnect()
+        receiver.disconnect()
+        return False
+    
+    # Prepare two packets with different sequence numbers
+    seq1 = sender.get_next_sequence()
+    seq2 = sender.get_next_sequence()
+    pkt2 = create_packet(MsgType.DATA, seq2, sender.username, receiver.username, b"Second")
+    pkt1 = create_packet(MsgType.DATA, seq1, sender.username, receiver.username, b"First")
+    
+    # Send in reverse order: seq2 first, then seq1
+    sender.send_packet(pkt2)
+    time.sleep(0.1)
+    sender.send_packet(pkt1)
+    
+    time.sleep(0.5)
+    receiver.receive_messages(timeout=1.0)
+    
+    seqs_seen = {m["seq"] for m in receiver.received_messages}
+    out_of_order_ok = (seq1 in seqs_seen) and (seq2 in seqs_seen)
+    
+    if out_of_order_ok:
+        print("✓ Out-of-order packets both delivered exactly once")
+    else:
+        print("✗ Out-of-order handling failed")
+    
+    sender.disconnect()
+    receiver.disconnect()
+    return out_of_order_ok
+
 def main():
     """Run all tests"""
     if len(sys.argv) < 2:
@@ -505,10 +537,8 @@ def main():
     host = sys.argv[1]
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 5001
     
-    print("\n" + "="*60)
-    print("Reliable UDP Test Suite")
+    log_section("Reliable UDP Test Suite")
     print(f"Testing server at {host}:{port}")
-    print("="*60)
     
     results = []
     
@@ -519,8 +549,10 @@ def main():
     results.append(("Message Delivery", test_message_delivery(host, port)))
     time.sleep(1)
     
-    results.append(("Retransmission", test_retransmission(host, port)))
-    time.sleep(1)
+    # Reliability tests for multiple loss rates
+    for rate in (0.10, 0.25, 0.50):
+        results.append((f"Retransmission @{int(rate * 100)}% loss", test_retransmission(host, port, rate)))
+        time.sleep(1)
     
     results.append(("Group Chat", test_group_chat(host, port)))
     time.sleep(1)
@@ -529,11 +561,12 @@ def main():
     time.sleep(1)
     
     results.append(("Duplicate Detection", test_duplicate_detection(host, port)))
+    time.sleep(1)
+    
+    results.append(("Out-of-Order Delivery", test_out_of_order_delivery(host, port)))
     
     # print summary
-    print("\n" + "="*60)
-    print("TEST SUMMARY")
-    print("="*60)
+    log_section("TEST SUMMARY")
     
     passed = 0
     for test_name, result in results:

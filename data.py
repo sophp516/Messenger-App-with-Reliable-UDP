@@ -34,7 +34,8 @@ class PendingMessage:
     recipient: str
     packet_type: int
     last_retry_time: float = 0.0
-    status: int = MessageStatus.SENT  
+    status: int = MessageStatus.SENT
+    retry_timestamps: list[float] = field(default_factory=list)
 
 @dataclass
 class ClientInfo:

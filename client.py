@@ -609,6 +609,7 @@ class UDPClient:
             for seq_num, pending_msg in messages_to_retransmit:
                 pending_msg.attempts += 1
                 pending_msg.last_retry_time = current_time
+                pending_msg.retry_timestamps.append(current_time)
                 
                 if pending_msg.attempts > 10:  # Give up after 10 attempts
                     with self.lock:
@@ -617,6 +618,10 @@ class UDPClient:
                             del self.pending_messages[seq_num]
                     self.log(f"Message to {pending_msg.recipient} failed after maximum retries")
                 else:
+                    self.log(
+                        f"Retransmitting seq={seq_num} to {pending_msg.recipient} "
+                        f"(attempt {pending_msg.attempts})"
+                    )
                     self.send_packet(pending_msg.packet)
             
             time.sleep(0.1)  # Check every 100ms
