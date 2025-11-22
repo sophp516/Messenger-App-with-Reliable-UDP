@@ -16,6 +16,7 @@ from typing import Dict, Optional, Tuple
 from data import MsgType, PendingMessage, MessageStatus
 import sys
 
+# replace with your own host IP address
 HOST = "10.226.2.83"
 PORT = 5001
 HEARTBEAT_INTERVAL = 30  # seconds
@@ -523,7 +524,7 @@ class UDPClient:
                 
                 packet_type = packet['packet_type']
                 
-                # Handle handshake completion during connection
+                # handle handshake completion during connection
                 if packet_type == MsgType.SYN_ACK and not self.handshake_complete:
                     with self.handshake_lock:
                         if not self.handshake_complete:
@@ -549,14 +550,14 @@ class UDPClient:
                 elif packet_type == MsgType.GROUPS_RESPONSE:
                     self.handle_groups_response(packet)
                 elif packet_type == MsgType.FIN:
-                    # Server is disconnecting us
+                    # server is disconnecting us
                     self.log("Server disconnected")
                     with self.lock:
                         self.connected = False
                     break
                 elif packet_type == MsgType.FIN_ACK:
-                    # Server sent FIN_ACK (during disconnect)
-                    # Send final ACK
+                    # server sent FIN_ACK (during disconnect)
+                    # send final ACK
                     ack_packet = create_packet(MsgType.ACK, 0, self.username, "SERVER")
                     self.send_packet(ack_packet)
                     with self.lock:
@@ -584,30 +585,30 @@ class UDPClient:
             current_time = time.time()
             messages_to_retransmit = []
             
+            # this logic was helped by LLM
             with self.lock:
                 for seq_num, pending_msg in list(self.pending_messages.items()):
                     # Calculate exponential backoff delay
                     delay = min(INITIAL_RETRANSMIT_DELAY * (2 ** pending_msg.attempts), MAX_RETRANSMIT_DELAY)
                     
-                    # Check if enough time has passed since last retry
+                    # check if enough time has passed since last retry
                     time_since_last_retry = current_time - pending_msg.last_retry_time
                     time_since_send = current_time - pending_msg.send_time
                     
                     if pending_msg.last_retry_time == 0.0:
-                        # First retry check
                         if time_since_send >= INITIAL_RETRANSMIT_DELAY:
                             messages_to_retransmit.append((seq_num, pending_msg))
                     else:
-                        # Subsequent retries
+                        # subsequent retries
                         if time_since_last_retry >= delay:
                             messages_to_retransmit.append((seq_num, pending_msg))
             
-            # Retransmit messages
+            # retransmit messages
             for seq_num, pending_msg in messages_to_retransmit:
                 pending_msg.attempts += 1
                 pending_msg.last_retry_time = current_time
                 
-                if pending_msg.attempts > 10:  # Give up after 10 attempts
+                if pending_msg.attempts > 10:  # give up after 10 attempts
                     with self.lock:
                         if seq_num in self.pending_messages:
                             self.pending_messages[seq_num].status = MessageStatus.FAILED
@@ -616,7 +617,7 @@ class UDPClient:
                 else:
                     self.send_packet(pending_msg.packet)
             
-            time.sleep(0.1)  # Check every 100ms
+            time.sleep(0.1)  # check every 100ms
     
     def heartbeat_thread(self):
         """Thread for sending periodic heartbeats"""
@@ -660,7 +661,7 @@ class UDPClient:
                     break
                 
                 elif user_input.startswith("@"):
-                    # Direct message: @username message
+                    # direct message: @username message
                     parts = user_input[1:].split(" ", 1)
                     if len(parts) == 2:
                         recipient, message = parts
@@ -669,7 +670,7 @@ class UDPClient:
                         print("Usage: @username message")
                 
                 elif user_input.startswith("#"):
-                    # Group message: #groupname message
+                    # group message: #groupname message
                     parts = user_input[1:].split(" ", 1)
                     if len(parts) == 2:
                         group_name, message = parts
@@ -678,7 +679,7 @@ class UDPClient:
                         print("Usage: #groupname message")
                 
                 elif user_input.startswith("/create "):
-                    # Create group
+                    # create group
                     group_name = user_input[8:].strip()
                     if group_name:
                         self.create_group(group_name)
@@ -687,7 +688,7 @@ class UDPClient:
                         print("Usage: /create groupname")
                 
                 elif user_input.startswith("/join "):
-                    # Join group
+                    # join group
                     group_name = user_input[6:].strip()
                     if group_name:
                         self.join_group(group_name)
@@ -696,7 +697,7 @@ class UDPClient:
                         print("Usage: /join groupname")
                 
                 elif user_input.startswith("/leave "):
-                    # Leave group
+                    # leave group
                     group_name = user_input[7:].strip()
                     if group_name:
                         self.leave_group(group_name)
@@ -705,11 +706,11 @@ class UDPClient:
                         print("Usage: /leave groupname")
                 
                 elif user_input == "/list":
-                    # List online users
+                    # list online users
                     self.request_user_list()
                 
                 elif user_input == "/groups":
-                    # List available groups
+                    # list available groups
                     self.request_groups_list()
                 
                 else:
@@ -727,11 +728,11 @@ class UDPClient:
     
     def run(self):
         """Main client loop"""
-        # Connect to server
+        # connect to server
         if not self.connect():
             return
         
-        # Start threads
+        # start threads
         recv_thread = threading.Thread(target=self.recv_thread, daemon=True)
         retransmit_thread = threading.Thread(target=self.retransmit_thread, daemon=True)
         heartbeat_thread = threading.Thread(target=self.heartbeat_thread, daemon=True)
@@ -740,7 +741,7 @@ class UDPClient:
         retransmit_thread.start()
         heartbeat_thread.start()
         
-        # Run input thread in main thread (blocks)
+        # run input thread in main thread (blocks)
         try:
             self.input_thread()
         except KeyboardInterrupt:
