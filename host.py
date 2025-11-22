@@ -2,7 +2,7 @@ import socket
 import struct
 import time
 import threading
-from collections import defaultdict
+from collections import defaultdict, deque
 from enum import IntEnum
 from dataclasses import dataclass
 from typing import Dict, Set, Optional, Tuple
@@ -19,6 +19,7 @@ class MsgType(IntEnum):
     SYN = 0x04
     SYN_ACK = 0x05
     FIN = 0x06
+    FIN_ACK = 0x10
     HEARTBEAT = 0x07
     ERROR = 0x08
     JOIN = 0x09
@@ -37,14 +38,15 @@ class ClientInfo:
     sequence_number: int
     status: str  # "ONLINE" or "OFFLINE"
     pending_ack: Optional[int] = None  # sequence number waiting for ACK
+    received_seq_window: deque = None  # track received sequence numbers for duplicate detection
 
 class Group:
-    def __init__(self, group_name: str, admin: str):
+    def __init__(self, group_name: str, admin: str, max_history: int = 100):
         self.group_name = group_name
         self.admin = admin # username of creator
         self.members: Set[str] = set([admin])
         self.created_at = time.time()
-        self.message_history = []
+        self.message_history = deque(maxlen=max_history)  # ring buffer
 
     def add_member(self, member: str):
         self.members.add(member)
@@ -57,6 +59,19 @@ class Group:
 
     def has_member(self, username: str) -> bool:
         return username in self.members
+    
+    def add_message(self, sender: str, payload: bytes, seq_num: int):
+        """Add message to history (ring buffer)"""
+        try:
+            message_text = payload.decode('utf-8')
+            self.message_history.append({
+                'sender': sender,
+                'timestamp': time.time(),
+                'payload': message_text,
+                'sequence_number': seq_num
+            })
+        except UnicodeDecodeError:
+            pass
 
 def calculate_checksum(data: bytes) -> int:
     """Calculate checksum for packet"""
@@ -174,7 +189,6 @@ class UDPServer:
         self.sock.bind(('0.0.0.0', port))
         self.client_registry: Dict[str, ClientInfo] = {}
         self.group_registry: Dict[str, Group] = {}
-        self.pending_messages: Dict[int, Dict] = {}  # seq_num -> message info
         self.sequence_counter = 0
         self.lock = threading.Lock()
         self.running = True
@@ -205,9 +219,13 @@ class UDPServer:
             # check if username already exists
             if username in self.client_registry:
                 # client reconnecting - update address
-                self.client_registry[username].address = address
-                self.client_registry[username].last_seen = time.time()
-                self.client_registry[username].status = "ONLINE"
+                client_info = self.client_registry[username]
+                client_info.address = address
+                client_info.last_seen = time.time()
+                client_info.status = "ONLINE"
+                # reset received_seq_window if needed
+                if client_info.received_seq_window is None:
+                    client_info.received_seq_window = deque(maxlen=100)
                 self.log(f"Client '{username}' reconnected from {address[0]}:{address[1]}")
             else:
                 # new client
@@ -223,7 +241,8 @@ class UDPServer:
                     address=address,
                     last_seen=time.time(),
                     sequence_number=0,
-                    status="ONLINE"
+                    status="ONLINE",
+                    received_seq_window=deque(maxlen=100)
                 )
                 self.log(f"Client '{username}' connected from {address[0]}:{address[1]}")
         
@@ -252,8 +271,23 @@ class UDPServer:
             if sender not in self.client_registry:
                 return
             
+            sender_info = self.client_registry[sender]
+            
+            # validate sequence number - check for duplicates
+            if sender_info.received_seq_window is None:
+                sender_info.received_seq_window = deque(maxlen=100)
+            
+            if seq_num in sender_info.received_seq_window:
+                # duplicate packet - resend ACK but don't forward
+                ack_packet = create_packet(MsgType.ACK, seq_num, "SERVER", sender)
+                self.send_packet(ack_packet, address)
+                return
+            
+            # add to received window
+            sender_info.received_seq_window.append(seq_num)
+            
             # update sender's last_seen
-            self.client_registry[sender].last_seen = time.time()
+            sender_info.last_seen = time.time()
             
             # send ACK to sender
             ack_packet = create_packet(MsgType.ACK, seq_num, "SERVER", sender)
@@ -281,7 +315,21 @@ class UDPServer:
             if sender not in self.client_registry:
                 return
             
-            self.client_registry[sender].last_seen = time.time()
+            sender_info = self.client_registry[sender]
+            
+            # validate sequence number - check for duplicates
+            if sender_info.received_seq_window is None:
+                sender_info.received_seq_window = deque(maxlen=100)
+            
+            if seq_num in sender_info.received_seq_window:
+                # duplicate packet - resend ACK but don't process
+                ack_packet = create_packet(MsgType.ACK, seq_num, "SERVER", sender)
+                self.send_packet(ack_packet, address)
+                return
+            
+            # add to received window
+            sender_info.received_seq_window.append(seq_num)
+            sender_info.last_seen = time.time()
             
             # send ACK to sender
             ack_packet = create_packet(MsgType.ACK, seq_num, "SERVER", sender)
@@ -302,6 +350,9 @@ class UDPServer:
                 error_packet = create_packet(MsgType.ERROR, seq_num, "SERVER", sender, error_payload)
                 self.send_packet(error_packet, address)
                 return
+            
+            # add to message history
+            group.add_message(sender, payload, seq_num)
             
             # broadcast to all members except sender
             for member in group.get_members():
@@ -392,7 +443,7 @@ class UDPServer:
                 self.log(f"Client '{username}' disconnected")
         
         # send FIN_ACK
-        fin_ack_packet = create_packet(MsgType.FIN, 0, "SERVER", username)
+        fin_ack_packet = create_packet(MsgType.FIN_ACK, 0, "SERVER", username)
         self.send_packet(fin_ack_packet, address)
     
     def handle_ack(self, packet: Dict, address: Tuple[str, int]):
@@ -518,6 +569,9 @@ class UDPServer:
                     self.handle_heartbeat(packet, addr)
                 elif packet_type == MsgType.FIN:
                     self.handle_fin(packet, addr)
+                elif packet_type == MsgType.FIN_ACK:
+                    # FIN_ACK from client (shouldn't happen, but handle gracefully)
+                    pass
                 elif packet_type == MsgType.LIST:
                     self.handle_list(packet, addr)
                 elif packet_type == MsgType.GROUPS:

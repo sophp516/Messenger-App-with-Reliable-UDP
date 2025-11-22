@@ -21,6 +21,7 @@ class MsgType(IntEnum):
     SYN = 0x04
     SYN_ACK = 0x05
     FIN = 0x06
+    FIN_ACK = 0x10
     HEARTBEAT = 0x07
     ERROR = 0x08
     JOIN = 0x09
