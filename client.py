@@ -14,7 +14,7 @@ from collections import deque
 from enum import IntEnum
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
-from data import MsgType, PendingMessage
+from data import MsgType, PendingMessage, MessageStatus
 import sys
 
 HOST = "127.0.0.1"
@@ -136,6 +136,7 @@ class UDPClient:
         self.received_seq_window = deque(maxlen=RECEIVED_SEQ_WINDOW_SIZE)
         self.lock = threading.Lock()
         self.running = True
+        self.last_received_time = time.time()  # track last received packet
         
         # For tracking handshake
         self.handshake_complete = False
@@ -171,7 +172,7 @@ class UDPClient:
                 syn_packet = create_packet(MsgType.SYN, 0, self.username, "SERVER")
                 self.send_packet(syn_packet)
                 
-                # Wait for SYN_ACK
+                # Wait for SYN_ACK or ERROR
                 start_time = time.time()
                 while time.time() - start_time < CONNECTION_TIMEOUT:
                     try:
@@ -190,6 +191,11 @@ class UDPClient:
                             print(f"Connected to server at {addr[0]}:{addr[1]}")
                             self.log("Connection established")
                             return True
+                        elif packet and packet['packet_type'] == MsgType.ERROR:
+                            # Server rejected connection (e.g., username taken)
+                            error_msg = packet['payload'].decode('utf-8') if packet['payload'] else "Connection rejected"
+                            print(f"Connection failed: {error_msg}")
+                            return False
                     except socket.timeout:
                         continue
                     except Exception as e:
@@ -206,6 +212,39 @@ class UDPClient:
                     time.sleep(1)
         
         print("Failed to connect after maximum retries")
+        return False
+    
+    def check_connection_health(self):
+        """Check if connection is still alive based on last received time"""
+        current_time = time.time()
+        with self.lock:
+            # if no packets received for 2 * HEARTBEAT_INTERVAL, connection might be lost
+            if self.connected and (current_time - self.last_received_time) > (HEARTBEAT_INTERVAL * 2):
+                self.log("Connection appears lost, attempting reconnection...")
+                self.connected = False
+                return self.attempt_reconnection()
+        return True
+    
+    def attempt_reconnection(self):
+        """Attempt to reconnect if connection is lost"""
+        if not self.running:
+            return False
+        
+        reconnect_attempts = 0
+        max_reconnect_attempts = 3
+        
+        while reconnect_attempts < max_reconnect_attempts and self.running:
+            if self.connect():
+                self.log("Reconnection successful")
+                return True
+            reconnect_attempts += 1
+            if reconnect_attempts < max_reconnect_attempts:
+                time.sleep(2)  # wait before retry
+        
+        if reconnect_attempts >= max_reconnect_attempts:
+            self.log("Failed to reconnect after maximum attempts")
+            self.running = False
+            return False
         return False
     
     def disconnect(self):
@@ -225,9 +264,8 @@ class UDPClient:
                     data, addr = self.sock.recvfrom(4096)
                     packet = parse_packet(data)
                     
-                    if packet and packet['packet_type'] == MsgType.FIN:
-                        # Received FIN_ACK (server uses FIN type for FIN_ACK)
-                        # Send final ACK
+                    if packet and packet['packet_type'] == MsgType.FIN_ACK:
+                        # Received FIN_ACK, send final ACK
                         ack_packet = create_packet(MsgType.ACK, 0, self.username, "SERVER")
                         self.send_packet(ack_packet)
                         break
@@ -403,6 +441,7 @@ class UDPClient:
         
         with self.lock:
             if seq_num in self.pending_messages:
+                self.pending_messages[seq_num].status = MessageStatus.DELIVERED
                 del self.pending_messages[seq_num]
     
     def handle_data(self, packet: Dict):
@@ -482,6 +521,10 @@ class UDPClient:
                 if packet is None:
                     continue
                 
+                # update last received time
+                with self.lock:
+                    self.last_received_time = time.time()
+                
                 packet_type = packet['packet_type']
                 
                 # Handle handshake completion during connection
@@ -515,8 +558,21 @@ class UDPClient:
                     with self.lock:
                         self.connected = False
                     break
+                elif packet_type == MsgType.FIN_ACK:
+                    # Server sent FIN_ACK (during disconnect)
+                    # Send final ACK
+                    ack_packet = create_packet(MsgType.ACK, 0, self.username, "SERVER")
+                    self.send_packet(ack_packet)
+                    with self.lock:
+                        self.connected = False
+                    break
                     
             except socket.timeout:
+                # check for connection loss - no packets received for a while
+                if self.connected:
+                    # try to detect if connection is lost
+                    # if no heartbeat response or no packets for extended period
+                    continue
                 continue
             except Exception as e:
                 if self.running:
@@ -558,6 +614,7 @@ class UDPClient:
                 if pending_msg.attempts > 10:  # Give up after 10 attempts
                     with self.lock:
                         if seq_num in self.pending_messages:
+                            self.pending_messages[seq_num].status = MessageStatus.FAILED
                             del self.pending_messages[seq_num]
                     self.log(f"Message to {pending_msg.recipient} failed after maximum retries")
                 else:
@@ -570,6 +627,8 @@ class UDPClient:
         while self.running:
             if self.connected:
                 self.send_heartbeat()
+                # check connection health periodically
+                self.check_connection_health()
             time.sleep(HEARTBEAT_INTERVAL)
     
     def input_thread(self):
