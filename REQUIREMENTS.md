@@ -28,7 +28,7 @@ The system serves users who want to communicate online:
 **Client** End-user application that sends and receives messages. Each user is identified by a unique username.
 **Host** Central server responsible for message routing, reliability control, and group management.
 **Packet** Core data unit containing message type, sequence number, sender, recipient, timestamp, and checksum.
-**Client Registry** Server data structure mapping connected usernames to IP/port pairs.
+**Client ** Server data structure mapping connected usernames to IP/port pairs.
 **Group Registry** Tracks group membership for broadcast delivery.
 **Message Queue** Stores pending or undelivered messages until acknowledgment.
 
@@ -58,7 +58,7 @@ Reliability and Error Recovery
 • Malformed packets (bad checksum or missing fields) are dropped and logged.
 
 
-## Business Rules and Communication Plan
+#Registry# Business Rules and Communication Plan
 
 ### Connection Lifecycle
 

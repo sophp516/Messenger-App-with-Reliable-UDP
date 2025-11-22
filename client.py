@@ -137,8 +137,6 @@ class UDPClient:
         self.lock = threading.Lock()
         self.running = True
         self.last_received_time = time.time()  # track last received packet
-        
-        # For tracking handshake
         self.handshake_complete = False
         self.handshake_lock = threading.Lock()
         
@@ -168,11 +166,10 @@ class UDPClient:
         
         for attempt in range(MAX_RETRIES):
             try:
-                # Send SYN
                 syn_packet = create_packet(MsgType.SYN, 0, self.username, "SERVER")
                 self.send_packet(syn_packet)
                 
-                # Wait for SYN_ACK or ERROR
+                # wait for SYN_ACK or ERROR
                 start_time = time.time()
                 while time.time() - start_time < CONNECTION_TIMEOUT:
                     try:
@@ -180,7 +177,7 @@ class UDPClient:
                         packet = parse_packet(data)
                         
                         if packet and packet['packet_type'] == MsgType.SYN_ACK:
-                            # Received SYN_ACK, send ACK to complete handshake
+                            # received SYN_ACK, send ACK to complete handshake
                             ack_packet = create_packet(MsgType.ACK, 0, self.username, "SERVER")
                             self.send_packet(ack_packet)
                             
@@ -192,7 +189,7 @@ class UDPClient:
                             self.log("Connection established")
                             return True
                         elif packet and packet['packet_type'] == MsgType.ERROR:
-                            # Server rejected connection (e.g., username taken)
+                            # server rejected connection
                             error_msg = packet['payload'].decode('utf-8') if packet['payload'] else "Connection rejected"
                             print(f"Connection failed: {error_msg}")
                             return False
@@ -218,7 +215,7 @@ class UDPClient:
         """Check if connection is still alive based on last received time"""
         current_time = time.time()
         with self.lock:
-            # if no packets received for 2 * HEARTBEAT_INTERVAL, connection might be lost
+            # if no packets received for 2 * HEARTBEAT_INTERVAL -> connection might be lost
             if self.connected and (current_time - self.last_received_time) > (HEARTBEAT_INTERVAL * 2):
                 self.log("Connection appears lost, attempting reconnection...")
                 self.connected = False
@@ -436,7 +433,7 @@ class UDPClient:
             self.log(f"Error sending heartbeat: {e}")
     
     def handle_ack(self, packet: Dict):
-        """Handle ACK packet - mark message as delivered"""
+        """Handle ACK packet and mark message as delivered"""
         seq_num = packet['sequence_number']
         
         with self.lock:
