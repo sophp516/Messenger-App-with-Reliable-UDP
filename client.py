@@ -1,3 +1,11 @@
+''''
+Joyce and Sophie's UDP Messaging Client
+
+Citing LLM on 
+ - Retry and Retransmission logic on how to track unacknowledged messages and retransmit them using exponential backoffs 
+- Helped w. packet parsing 
+'''
+
 import socket
 import struct
 import time
@@ -6,9 +14,9 @@ from collections import deque
 from enum import IntEnum
 from dataclasses import dataclass
 from typing import Dict, Optional, Tuple
+from data import MsgType, PendingMessage, MessageStatus
 import sys
 
-# Protocol Constants (must match host.py)
 HOST = "127.0.0.1"
 PORT = 5001
 HEARTBEAT_INTERVAL = 30  # seconds
@@ -17,39 +25,6 @@ MAX_RETRIES = 3
 INITIAL_RETRANSMIT_DELAY = 0.5  # 500ms
 MAX_RETRANSMIT_DELAY = 8.0  # 8 seconds
 RECEIVED_SEQ_WINDOW_SIZE = 100
-
-class MsgType(IntEnum):
-    DATA = 0x01
-    ACK = 0x03
-    SYN = 0x04
-    SYN_ACK = 0x05
-    FIN = 0x06
-    FIN_ACK = 0x10
-    HEARTBEAT = 0x07
-    ERROR = 0x08
-    JOIN = 0x09
-    LEAVE = 0x0A
-    GROUP_MSG = 0x0B
-    LIST = 0x0C
-    GROUPS = 0x0D
-    LIST_RESPONSE = 0x0E
-    GROUPS_RESPONSE = 0x0F
-
-class MessageStatus(IntEnum):
-    SENT = 1
-    DELIVERED = 2
-    FAILED = 3
-
-@dataclass
-class PendingMessage:
-    sequence_number: int
-    packet: bytes
-    send_time: float
-    attempts: int
-    recipient: str
-    packet_type: int
-    last_retry_time: float = 0.0
-    status: int = MessageStatus.SENT  # SENT, DELIVERED, or FAILED
 
 def calculate_checksum(data: bytes) -> int:
     """Calculate 16-bit checksum for packet"""
@@ -70,19 +45,6 @@ def create_packet(packet_type: int, sequence_number: int, sender: str,
     # Encode strings
     sender_bytes = sender.encode('utf-8')
     recipient_bytes = recipient.encode('utf-8')
-    
-    # Packet structure (same as host.py):
-    # packet_type (1 byte)
-    # sequence_number (4 bytes, unsigned int)
-    # timestamp (8 bytes, double)
-    # sender_len (2 bytes, unsigned short)
-    # sender (variable)
-    # recipient_len (2 bytes, unsigned short)
-    # recipient (variable)
-    # payload_len (4 bytes, unsigned int)
-    # payload (variable)
-    # checksum (2 bytes, unsigned short)
-    
     header = struct.pack('!B I d H', packet_type, sequence_number, timestamp, len(sender_bytes))
     header += sender_bytes
     header += struct.pack('!H', len(recipient_bytes))
@@ -210,7 +172,7 @@ class UDPClient:
                 syn_packet = create_packet(MsgType.SYN, 0, self.username, "SERVER")
                 self.send_packet(syn_packet)
                 
-                # Wait for SYN_ACK
+                # Wait for SYN_ACK or ERROR
                 start_time = time.time()
                 while time.time() - start_time < CONNECTION_TIMEOUT:
                     try:
@@ -229,6 +191,11 @@ class UDPClient:
                             print(f"Connected to server at {addr[0]}:{addr[1]}")
                             self.log("Connection established")
                             return True
+                        elif packet and packet['packet_type'] == MsgType.ERROR:
+                            # Server rejected connection (e.g., username taken)
+                            error_msg = packet['payload'].decode('utf-8') if packet['payload'] else "Connection rejected"
+                            print(f"Connection failed: {error_msg}")
+                            return False
                     except socket.timeout:
                         continue
                     except Exception as e:
@@ -770,11 +737,11 @@ class UDPClient:
         
         # Start threads
         recv_thread = threading.Thread(target=self.recv_thread, daemon=True)
-        retransmit_thread = threading.Thread(target=self.retransmit_thread, daemon=True)
+       # retransmit_thread = threading.Thread(target=self.retransmit_thread, daemon=True)
         heartbeat_thread = threading.Thread(target=self.heartbeat_thread, daemon=True)
         
         recv_thread.start()
-        retransmit_thread.start()
+        #retransmit_thread.start()
         heartbeat_thread.start()
         
         # Run input thread in main thread (blocks)

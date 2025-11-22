@@ -7,38 +7,12 @@ from enum import IntEnum
 from dataclasses import dataclass
 from typing import Dict, Set, Optional, Tuple
 import sys
+from data import MsgType, ClientInfo
 
 PORT = 5001
 HEARTBEAT_INTERVAL = 30  # seconds
 CLIENT_TIMEOUT = 90  # seconds
 MAX_CLIENTS = 100
-
-class MsgType(IntEnum):
-    DATA = 0x01
-    ACK = 0x03
-    SYN = 0x04
-    SYN_ACK = 0x05
-    FIN = 0x06
-    FIN_ACK = 0x10
-    HEARTBEAT = 0x07
-    ERROR = 0x08
-    JOIN = 0x09
-    LEAVE = 0x0A
-    GROUP_MSG = 0x0B
-    LIST = 0x0C
-    GROUPS = 0x0D
-    LIST_RESPONSE = 0x0E
-    GROUPS_RESPONSE = 0x0F
-
-@dataclass
-class ClientInfo:
-    username: str
-    address: Tuple[str, int]
-    last_seen: float
-    sequence_number: int
-    status: str  # "ONLINE" or "OFFLINE"
-    pending_ack: Optional[int] = None  # sequence number waiting for ACK
-    received_seq_window: deque = None  # track received sequence numbers for duplicate detection
 
 class Group:
     def __init__(self, group_name: str, admin: str, max_history: int = 100):
@@ -92,19 +66,6 @@ def create_packet(packet_type: int, sequence_number: int, sender: str,
     # encode strings
     sender_bytes = sender.encode('utf-8')
     recipient_bytes = recipient.encode('utf-8')
-    
-    # packet structure:
-    # packet_type (1 byte)
-    # sequence_number (4 bytes, unsigned int)
-    # timestamp (8 bytes, double)
-    # sender_len (2 bytes, unsigned short)
-    # sender (variable)
-    # recipient_len (2 bytes, unsigned short)
-    # recipient (variable)
-    # payload_len (4 bytes, unsigned int)
-    # payload (variable)
-    # checksum (2 bytes, unsigned short)
-    
     header = struct.pack('!B I d H', packet_type, sequence_number, timestamp, len(sender_bytes))
     header += sender_bytes
     header += struct.pack('!H', len(recipient_bytes))
@@ -218,15 +179,24 @@ class UDPServer:
         with self.lock:
             # check if username already exists
             if username in self.client_registry:
-                # client reconnecting - update address
                 client_info = self.client_registry[username]
-                client_info.address = address
-                client_info.last_seen = time.time()
-                client_info.status = "ONLINE"
-                # reset received_seq_window if needed
-                if client_info.received_seq_window is None:
-                    client_info.received_seq_window = deque(maxlen=100)
-                self.log(f"Client '{username}' reconnected from {address[0]}:{address[1]}")
+                # check if same client reconnecting (same address)
+                if client_info.address == address:
+                    # same client reconnecting - update info
+                    client_info.address = address
+                    client_info.last_seen = time.time()
+                    client_info.status = "ONLINE"
+                    # reset received_seq_window if needed
+                    if client_info.received_seq_window is None:
+                        client_info.received_seq_window = deque(maxlen=100)
+                    self.log(f"Client '{username}' reconnected from {address[0]}:{address[1]}")
+                else:
+                    # different client trying to use same username - reject
+                    error_payload = f"Username '{username}' is already taken.".encode('utf-8')
+                    error_packet = create_packet(MsgType.ERROR, 0, "SERVER", username, error_payload)
+                    self.send_packet(error_packet, address)
+                    self.log(f"Connection rejected: username '{username}' already taken by {client_info.address[0]}:{client_info.address[1]}")
+                    return
             else:
                 # new client
                 if len(self.client_registry) >= MAX_CLIENTS:
@@ -236,14 +206,15 @@ class UDPServer:
                     self.send_packet(error_packet, address)
                     return
                 
-                self.client_registry[username] = ClientInfo(
+                client_info = ClientInfo(
                     username=username,
                     address=address,
                     last_seen=time.time(),
                     sequence_number=0,
-                    status="ONLINE",
-                    received_seq_window=deque(maxlen=100)
+                    status="ONLINE"
                 )
+                client_info.received_seq_window = deque(maxlen=100)
+                self.client_registry[username] = client_info
                 self.log(f"Client '{username}' connected from {address[0]}:{address[1]}")
         
         # send SYN_ACK
