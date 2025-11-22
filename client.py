@@ -466,7 +466,7 @@ class UDPClient:
         except UnicodeDecodeError:
             self.log(f"Error decoding message from {sender}")
         
-        # Send ACK
+        # send ACK
         ack_packet = create_packet(MsgType.ACK, seq_num, self.username, sender)
         self.send_packet(ack_packet)
     
