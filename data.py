@@ -1,3 +1,7 @@
+from enum import IntEnum
+from dataclasses import dataclass
+from typing import Tuple, Optional
+
 class MsgType(IntEnum):
     DATA = 0x01
     ACK = 0x03
@@ -14,6 +18,7 @@ class MsgType(IntEnum):
     LIST_RESPONSE = 0x0E
     GROUPS_RESPONSE = 0x0F
     
+@dataclass
 class PendingMessage:
     sequence_number: int
     packet: bytes
@@ -22,3 +27,12 @@ class PendingMessage:
     recipient: str
     packet_type: int
     last_retry_time: float = 0.0
+
+@dataclass
+class ClientInfo:
+    username: str
+    address: Tuple[str, int]
+    last_seen: float
+    sequence_number: int
+    status: str  # "ONLINE" or "OFFLINE"
+    pending_ack: Optional[int] = None  # sequence number waiting for ACK

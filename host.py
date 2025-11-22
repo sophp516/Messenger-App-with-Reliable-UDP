@@ -7,36 +7,12 @@ from enum import IntEnum
 from dataclasses import dataclass
 from typing import Dict, Set, Optional, Tuple
 import sys
+from data import MsgType, ClientInfo
 
 PORT = 5001
 HEARTBEAT_INTERVAL = 30  # seconds
 CLIENT_TIMEOUT = 90  # seconds
 MAX_CLIENTS = 100
-
-class MsgType(IntEnum):
-    DATA = 0x01
-    ACK = 0x03
-    SYN = 0x04
-    SYN_ACK = 0x05
-    FIN = 0x06
-    HEARTBEAT = 0x07
-    ERROR = 0x08
-    JOIN = 0x09
-    LEAVE = 0x0A
-    GROUP_MSG = 0x0B
-    LIST = 0x0C
-    GROUPS = 0x0D
-    LIST_RESPONSE = 0x0E
-    GROUPS_RESPONSE = 0x0F
-
-@dataclass
-class ClientInfo:
-    username: str
-    address: Tuple[str, int]
-    last_seen: float
-    sequence_number: int
-    status: str  # "ONLINE" or "OFFLINE"
-    pending_ack: Optional[int] = None  # sequence number waiting for ACK
 
 class Group:
     def __init__(self, group_name: str, admin: str):
@@ -77,19 +53,6 @@ def create_packet(packet_type: int, sequence_number: int, sender: str,
     # encode strings
     sender_bytes = sender.encode('utf-8')
     recipient_bytes = recipient.encode('utf-8')
-    
-    # packet structure:
-    # packet_type (1 byte)
-    # sequence_number (4 bytes, unsigned int)
-    # timestamp (8 bytes, double)
-    # sender_len (2 bytes, unsigned short)
-    # sender (variable)
-    # recipient_len (2 bytes, unsigned short)
-    # recipient (variable)
-    # payload_len (4 bytes, unsigned int)
-    # payload (variable)
-    # checksum (2 bytes, unsigned short)
-    
     header = struct.pack('!B I d H', packet_type, sequence_number, timestamp, len(sender_bytes))
     header += sender_bytes
     header += struct.pack('!H', len(recipient_bytes))

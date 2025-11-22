@@ -678,11 +678,11 @@ class UDPClient:
         
         # Start threads
         recv_thread = threading.Thread(target=self.recv_thread, daemon=True)
-        retransmit_thread = threading.Thread(target=self.retransmit_thread, daemon=True)
+       # retransmit_thread = threading.Thread(target=self.retransmit_thread, daemon=True)
         heartbeat_thread = threading.Thread(target=self.heartbeat_thread, daemon=True)
         
         recv_thread.start()
-        retransmit_thread.start()
+        #retransmit_thread.start()
         heartbeat_thread.start()
         
         # Run input thread in main thread (blocks)
