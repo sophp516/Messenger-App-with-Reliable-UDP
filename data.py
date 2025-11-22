@@ -34,7 +34,7 @@ class PendingMessage:
     recipient: str
     packet_type: int
     last_retry_time: float = 0.0
-    status: int = MessageStatus.SENT  # SENT, DELIVERED, or FAILED
+    status: int = MessageStatus.SENT  
 
 @dataclass
 class ClientInfo:
@@ -42,6 +42,6 @@ class ClientInfo:
     address: Tuple[str, int]
     last_seen: float
     sequence_number: int
-    status: str  # "ONLINE" or "OFFLINE"
-    pending_ack: Optional[int] = None  # sequence number waiting for ACK
-    received_seq_window: Optional[deque] = field(default=None)  # track received sequence numbers for duplicate detection
+    status: str
+    pending_ack: Optional[int] = None 
+    received_seq_window: Optional[deque] = field(default=None)
