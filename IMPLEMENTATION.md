@@ -7,20 +7,22 @@
 #### UDP Messaging Client
 
 **Username:** `[user input]`  
-**Status:** Connected to server at `127.0.0.1:5000`
+**Status:** Connected to server at `127.0.0.1:5001`
 
 ---
 
 ### **Commands**
 
-| Command             | Description            |
-| ------------------- | ---------------------- |
-| `@username message` | Send a direct message  |
-| `/join groupname`   | Join or create a group |
-| `/leave groupname`  | Leave a group          |
-| `/list`             | List online users      |
-| `/groups`           | List available groups  |
-| `/quit`             | Exit the application   |
+| Command              | Description                     |
+| -------------------- | ------------------------------- |
+| `@username message`  | Send a direct message to a user |
+| `#groupname message` | Send a group message            |
+| `/create groupname`  | Create a new group              |
+| `/join groupname`    | Join or create a group          |
+| `/leave groupname`   | Leave a group                   |
+| `/list`              | List online users               |
+| `/groups`            | List all available groups       |
+| `/quit`              | Exit the application            |
 
 ---
 
@@ -95,32 +97,38 @@ GroupMessage (optional):
 ### Pending Message Queue
 
 ```
-Tracks delivery state of each sent message.
+Tracks delivery state of each sent message (client-side).
 
-MessageStatus:
-    Map<sequence_number, MessageInfo>
+MessageStatus (client.py / data.py):
+    - enum: SENT, DELIVERED, FAILED
 
-MessageInfo:
-    - status: enum (SENT, DELIVERED, FAILED)
-    - timestamp: float (when sent)
-    - retries: int
-
-PendingMessage:
+PendingMessage (client.py / data.py):
     - sequence_number: integer
-    - packet: Packet
-    - send_time: timestamp
+    - packet: bytes
+    - send_time: float
     - attempts: integer
     - recipient: string
-    - callback: function (on success/failure)
+    - packet_type: integer (MsgType)
+    - last_retry_time: float
+    - status: MessageStatus
 ```
 
 ### Duplicate Detection (Client-side)
 
-received_seq_window: - Type: deque (maxlen=100) - Purpose: Tracks recently received sequence numbers - Used by: recv_thread - Behavior: - If seq in window → resend ACK, ignore duplicate - Else → process message, append seq
+received_seq_window:
+
+- Type: deque (maxlen=100)
+- Purpose: Tracks recently received sequence numbers
+- Used by: recv_thread
+- Behavior:
+- If seq in window → resend ACK, ignore duplicate
+- Else → process message, append seq
 
 ## Key Modules for basic specs
 
 ### Client.py
+
+init Pending Message Queue
 
 ```
 send SYN → wait SYN_ACK → send ACK
@@ -147,8 +155,8 @@ retransmit_thread:
 
 ```
 
-bind UDP socket on port 5000
-init ClientRegistry, PendingQueue
+bind UDP socket on port 5001
+init ClientRegistry
 loop:
   packet = recv()
 
@@ -166,7 +174,7 @@ loop:
     send ACK to sender
 
   elif ACK:
-    mark message delivered
+    update client activity (last_seen)
 
   elif FIN:
     send FIN_ACK, remove client
@@ -188,14 +196,23 @@ heartbeat handling:
 - Handles packet creation, parsing, and checksum verification
 
 ```
-class MsgType(Enum):
+class MsgType(IntEnum):
     DATA = 0x01
     ACK = 0x03
     SYN = 0x04
     SYN_ACK = 0x05
     FIN = 0x06
+    FIN_ACK = 0x10
     HEARTBEAT = 0x07
     ERROR = 0x08
+    JOIN = 0x09
+    LEAVE = 0x0A
+    GROUP_MSG = 0x0B
+    LIST = 0x0C
+    GROUPS = 0x0D
+    LIST_RESPONSE = 0x0E
+    GROUPS_RESPONSE = 0x0F
+
 ```
 
 ## Error Handlings

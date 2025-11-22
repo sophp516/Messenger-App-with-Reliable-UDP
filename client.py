@@ -3,7 +3,6 @@ Joyce and Sophie's UDP Messaging Client
 
 Citing LLM on 
  - Retry and Retransmission logic on how to track unacknowledged messages and retransmit them using exponential backoffs 
-- Helped w. packet parsing 
 '''
 
 import socket
@@ -17,7 +16,7 @@ from typing import Dict, Optional, Tuple
 from data import MsgType, PendingMessage, MessageStatus
 import sys
 
-HOST = "127.0.0.1"
+HOST = "10.226.2.83"
 PORT = 5001
 HEARTBEAT_INTERVAL = 30  # seconds
 CONNECTION_TIMEOUT = 5  # seconds for handshake timeout
