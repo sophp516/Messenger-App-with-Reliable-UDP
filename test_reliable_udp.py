@@ -9,10 +9,11 @@ Things that we will be testing for:
 - Functional: message send/receive, retransmission, connection teardown.
 - Reliability: simulate 10%, 25%, 50% packet loss.
 - Stress: running 20 clients concurrently using thread simulation 
-- Edge: duplicate packets, out-of-order delivery.
+- Edge: duplicate packets, out-of-order delivery, bad packets 
 
 Used LLM to help generate TestClient to ensure our protocols are working as expect and predictably behavior and get around
 with testing not using the interface (ignore the heartbeat stuff, threading, and waiting for input stuff )
+Used LLM to autocomplete logging and speed of repetitive codes 
 
 """
 
@@ -527,6 +528,94 @@ def test_out_of_order_delivery(host: str, port: int):
     receiver.disconnect()
     return out_of_order_ok
 
+def test_bad_packet_handling(host: str, port: int) -> bool:
+    """Test that the server safely ignores malformed / bad packets."""
+    log_section("TEST 8: Bad Packet Handling")
+    
+    sender = TestClient("bad_alice", host, port)
+    receiver = TestClient("bad_bob", host, port)
+    
+    if not (sender.connect() and receiver.connect()):
+        print("✗ Connection failed")
+        return False
+    
+    try:
+        # Send a baseline valid message to ensure normal communication works
+        print("Sending baseline valid message...")
+        sender.send_message(receiver.username, "baseline-ok")
+        time.sleep(0.5)
+        receiver.receive_messages(timeout=2.0)
+        
+        messages = [m["message"] for m in receiver.received_messages]
+        if "baseline-ok" not in messages:
+            print("✗ Baseline message not delivered; cannot test bad packets")
+            return False
+        
+        # 1) Completely invalid raw bytes (too short / nonsense)
+        print("Sending completely invalid raw packet bytes...")
+        try:
+            sender.sock.sendto(b"\x00\x01garbage-invalid-packet", (host, port))
+        except Exception as e:
+            print(f"[{sender.username}] Error sending raw bad packet: {e}")
+        
+        # 2) Well-formed header but with corrupted checksum
+        print("Sending packet with corrupted checksum...")
+        good_pkt = create_packet(
+            MsgType.DATA,
+            sender.get_next_sequence(),
+            sender.username,
+            receiver.username,
+            b"should-not-be-delivered",
+        )
+        corrupted = bytearray(good_pkt)
+        if len(corrupted) >= 2:
+            corrupted[-1] ^= 0xFF  # flip last checksum byte
+        sender.send_packet(bytes(corrupted))
+        
+        # 3) Unknown packet type with a valid checksum
+        print("Sending packet with unknown packet type...")
+        unknown_type = 0xFF
+        unknown_pkt = create_packet(
+            unknown_type,
+            sender.get_next_sequence(),
+            sender.username,
+            receiver.username,
+            b"unknown-type",
+        )
+        sender.send_packet(unknown_pkt)
+        
+        # Give the server time to (not) react to the bad packets
+        time.sleep(1.0)
+        receiver.receive_messages(timeout=2.0)
+        
+        # Now send a valid message after the bad packets and ensure it still succeeds
+        print("Sending valid message after bad packets...")
+        sender.send_message(receiver.username, "after-bad-packets-ok")
+        time.sleep(0.5)
+        receiver.receive_messages(timeout=2.0)
+        
+        final_messages = [m["message"] for m in receiver.received_messages]
+        
+        # We expect:
+        # - baseline-ok to be delivered
+        # - after-bad-packets-ok to be delivered
+        # - no payloads from the intentionally bad packets to appear
+        if (
+            "baseline-ok" in final_messages
+            and "after-bad-packets-ok" in final_messages
+            and "should-not-be-delivered" not in final_messages
+            and "unknown-type" not in final_messages
+        ):
+            print("✓ Bad packets ignored, valid communication continues")
+            return True
+        else:
+            print("✗ Bad packet handling failed or corrupted normal delivery")
+            print(f"Received messages: {final_messages}")
+            return False
+    finally:
+        sender.disconnect()
+        receiver.disconnect()
+
 def main():
     """Run all tests"""
     if len(sys.argv) < 2:
@@ -564,6 +653,9 @@ def main():
     time.sleep(1)
     
     results.append(("Out-of-Order Delivery", test_out_of_order_delivery(host, port)))
+    time.sleep(1)
+    
+    results.append(("Bad Packet Handling", test_bad_packet_handling(host, port)))
     
     # print summary
     log_section("TEST SUMMARY")
